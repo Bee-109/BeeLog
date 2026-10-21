@@ -79,6 +79,16 @@ function App() {
     });
   }, [month]);
   const monthLabel = month.toLocaleDateString("en-US", { month: "short", year: "numeric" });
+  
+
+    
+const timelineLogs = useMemo(() => {
+  return [...filteredLogs].sort(
+    (a, b) => new Date(b.date).getTime() - new Date(a.date).getTime()
+  );
+}, [filteredLogs]);
+
+
 
   function createLog(e: React.FormEvent) {
     e.preventDefault();
@@ -138,7 +148,32 @@ function App() {
       </header>
 
       <main className="main-content">
-        <div className="dashboard-grid">
+  {activeNav === "Timeline" ? (
+    <TimelinePage
+      logs={timelineLogs}
+      projects={projects}
+      activeProject={activeProject}
+      setActiveProject={setActiveProject}
+      search={search}
+      setSearch={setSearch}
+      onCreate={() => setShowCreate(true)}
+    />
+    ) : activeNav === "Media" ? (
+  <MediaPage images={mediaImages} projects={projects} />
+    ) : activeNav === "Projects" ? (
+  <ProjectsPage
+    projects={projects}
+    logs={logs}
+    activeProject={activeProject}
+    setActiveProject={setActiveProject}
+    setActiveNav={setActiveNav}
+    search={search}
+    setSearch={setSearch}
+    onCreateLog={() => setShowCreate(true)}
+  />
+
+  ) : (
+    <div className="dashboard-grid">
           <div className="center-column">
             <section className="hero" style={{ backgroundImage: "linear-gradient(90deg,rgba(10,10,9,.94) 0%,rgba(10,10,9,.70) 42%,rgba(10,10,9,.05) 100%),url('/ex-image-5')" }}>
               <div className="hero-copy"><span className="eyebrow"><span className="live-dot"/> A PERSONAL DEVELOPMENT ARCHIVE</span>
@@ -229,6 +264,7 @@ function App() {
             <section className="month-summary"><span className="summary-label">THIS MONTH</span><div className="summary-grid"><div><strong>18</strong><small>Devlogs</small></div><div><strong>96</strong><small>Images</small></div><div><strong>7</strong><small>Videos</small></div><div><strong>12</strong><small>Days active</small></div></div><div className="summary-note"><Flame size={14}/> You're building momentum.</div></section>
           </aside>
         </div>
+  )}
         <footer className="page-footer"><span>✿ BeeLog</span><span>Ideas today, worlds tomorrow.</span><button onClick={() => setToast("Help centre coming soon")}><CircleHelp size={13}/> Help</button></footer>
       </main>
 
@@ -238,6 +274,670 @@ function App() {
     </div>
   );
 }
+
+
+function TimelinePage({
+  logs,
+  projects,
+  activeProject,
+  setActiveProject,
+  search,
+  setSearch,
+  onCreate,
+}: {
+  logs: Devlog[];
+  projects: Project[];
+  activeProject: string;
+  setActiveProject: (project: string) => void;
+  search: string;
+  setSearch: (value: string) => void;
+  onCreate: () => void;
+}) {
+  const groupedLogs = useMemo(() => {
+    const groups: { label: string; logs: Devlog[] }[] = [];
+
+    for (const log of logs) {
+      const label = new Date(log.date).toLocaleDateString("en-US", {
+        month: "long",
+        day: "numeric",
+        year: "numeric",
+      });
+
+      let group = groups.find((item) => item.label === label);
+
+      if (!group) {
+        group = { label, logs: [] };
+        groups.push(group);
+      }
+
+      group.logs.push(log);
+    }
+
+    return groups;
+  }, [logs]);
+
+  return (
+    <section className="timeline-page">
+      <div className="timeline-heading">
+        <div>
+          <span className="eyebrow">YOUR DEVELOPMENT HISTORY</span>
+          <h1>Timeline<span>.</span></h1>
+          <p>Every experiment, every fix, every little step forward.</p>
+        </div>
+
+        <button className="gold-button" onClick={onCreate}>
+          <Plus size={16} /> New Devlog
+        </button>
+      </div>
+
+      <div className="timeline-stats">
+        <article>
+          <FileText size={18} />
+          <div><strong>{logs.length}</strong><span>Devlogs</span></div>
+        </article>
+        <article>
+          <Folder size={18} />
+          <div>
+            <strong>{new Set(logs.map((log) => log.project)).size}</strong>
+            <span>Projects documented</span>
+          </div>
+        </article>
+        <article>
+          <CalendarDays size={18} />
+          <div>
+            <strong>{new Set(logs.map((log) => log.date)).size}</strong>
+            <span>Days documented</span>
+          </div>
+        </article>
+      </div>
+
+      <div className="timeline-toolbar">
+        <div className="timeline-filters">
+          {["All", ...projects.map((project) => project.name)].map((name) => (
+            <button
+              key={name}
+              className={`filter-chip ${
+                activeProject === name ? "chip-active" : ""
+              }`}
+              onClick={() => setActiveProject(name)}
+            >
+              {name}
+            </button>
+          ))}
+        </div>
+
+        <label className="timeline-search">
+          <Search size={16} />
+          <input
+            value={search}
+            onChange={(event) => setSearch(event.target.value)}
+            placeholder="Find a devlog..."
+          />
+          {search && (
+            <button onClick={() => setSearch("")} aria-label="Clear search">
+              <X size={14} />
+            </button>
+          )}
+        </label>
+      </div>
+
+      <div className="timeline-results">
+        <span>
+          Showing <strong>{logs.length}</strong>{" "}
+          {logs.length === 1 ? "entry" : "entries"}
+        </span>
+        <span>Newest first</span>
+      </div>
+
+      {groupedLogs.length > 0 ? (
+        <div className="timeline-feed">
+          {groupedLogs.map((group) => (
+            <section className="timeline-day" key={group.label}>
+              <div className="timeline-date">
+                <span className="timeline-date-dot" />
+                <h2>{group.label}</h2>
+                <span className="timeline-date-count">
+                  {group.logs.length}{" "}
+                  {group.logs.length === 1 ? "entry" : "entries"}
+                </span>
+              </div>
+
+              <div className="timeline-day-entries">
+                {group.logs.map((log) => {
+                  const projectIndex = projects.findIndex(
+                    (project) => project.name === log.project
+                  );
+
+                  return (
+                    <article className="timeline-entry" key={log.id}>
+                      <div className="timeline-entry-image">
+                        <img
+                          src={log.image}
+                          alt=""
+                          onError={(event) => {
+                            event.currentTarget.style.opacity = "0";
+                          }}
+                        />
+                      </div>
+
+                      <div className="timeline-entry-content">
+                        <div className="timeline-entry-top">
+                          <span
+                            className={`project-pill pill-${projectIndex}`}
+                          >
+                            {log.project}
+                          </span>
+                          <time>{log.time}</time>
+                        </div>
+
+                        <h3>{log.title}</h3>
+                        <p>{log.description}</p>
+
+                        <div className="timeline-entry-meta">
+                          <span><ImageIcon size={14} /> {log.images} images</span>
+                          {log.videos ? (
+                            <span><Video size={14} /> {log.videos} videos</span>
+                          ) : null}
+                          <span>
+                            <MessageCircle size={14} />
+                            {log.comments} comments
+                          </span>
+                        </div>
+                      </div>
+                    </article>
+                  );
+                })}
+              </div>
+            </section>
+          ))}
+        </div>
+      ) : (
+        <div className="timeline-empty">
+          <Search size={28} />
+          <h2>No devlogs found</h2>
+          <p>Try a different search or project filter.</p>
+          <button
+            className="dark-button"
+            onClick={() => {
+              setSearch("");
+              setActiveProject("All");
+            }}
+          >
+            Clear filters
+          </button>
+        </div>
+      )}
+    </section>
+  );
+}
+
+
+
+
+
+function ProjectsPage({
+  projects,
+  logs,
+  activeProject,
+  setActiveProject,
+  setActiveNav,
+  search,
+  setSearch,
+  onCreateLog,
+}: {
+  projects: Project[];
+  logs: Devlog[];
+  activeProject: string;
+  setActiveProject: (project: string) => void;
+  setActiveNav: (page: string) => void;
+  search: string;
+  setSearch: (value: string) => void;
+  onCreateLog: () => void;
+}) {
+  const descriptions: Record<string, string> = {
+    Blender: "3D modelling, low-poly assets, materials, animation and renders.",
+    "Roblox Studio": "Game mechanics, simulator systems, maps, UI and builds.",
+    "Unreal Engine": "Environments, lighting, gameplay systems and experiments.",
+    "Art & Design": "Visual concepts, textures, illustrations and creative exploration.",
+    Miscellaneous: "Tools, experiments, learning notes and everything in between.",
+  };
+
+  const filteredProjects = projects.filter((project) => {
+    const query = search.trim().toLowerCase();
+    return (
+      !query ||
+      project.name.toLowerCase().includes(query) ||
+      (descriptions[project.name] ?? "").toLowerCase().includes(query)
+    );
+  });
+
+  const selectedProject = projects.find(
+    (project) => project.name === activeProject
+  );
+
+  const projectLogs = logs
+    .filter((log) => log.project === activeProject)
+    .sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
+
+  return (
+    <section className="projects-page">
+      <div className="projects-page-heading">
+        <div>
+          <span className="eyebrow">YOUR CREATOR WORKSPACE</span>
+          <h1>{selectedProject ? selectedProject.name : "Projects"}<span>.</span></h1>
+          <p>
+            {selectedProject
+              ? descriptions[selectedProject.name]
+              : "Every world, experiment and idea you're bringing to life."}
+          </p>
+        </div>
+
+        <button className="gold-button" onClick={onCreateLog}>
+          <Plus size={16} /> New Devlog
+        </button>
+      </div>
+
+      <div className="projects-overview-stats">
+        <article>
+          <Folder size={18} />
+          <div><strong>{projects.length}</strong><span>Projects</span></div>
+        </article>
+        <article>
+          <FileText size={18} />
+          <div><strong>{logs.length}</strong><span>Devlogs</span></div>
+        </article>
+        <article>
+          <Activity size={18} />
+          <div>
+            <strong>{new Set(logs.map((log) => log.project)).size}</strong>
+            <span>Projects with activity</span>
+          </div>
+        </article>
+      </div>
+
+      {selectedProject ? (
+        <>
+          <div className="project-detail-toolbar">
+            <button
+              className="dark-button"
+              onClick={() => setActiveProject("All")}
+            >
+              <ArrowRight size={14} className="project-back-arrow" />
+              All projects
+            </button>
+            <button
+              className="text-link"
+              onClick={() => {
+                setSearch("");
+                setActiveNav("Timeline");
+              }}
+            >
+              Open Timeline <ArrowRight size={14} />
+            </button>
+          </div>
+
+          <article className="project-detail-card">
+            <div
+              className="project-detail-icon"
+              style={{ color: selectedProject.color }}
+            >
+              {selectedProject.icon}
+            </div>
+            <div className="project-detail-copy">
+              <span className="eyebrow">PROJECT OVERVIEW</span>
+              <h2>{selectedProject.name}</h2>
+              <p>{descriptions[selectedProject.name]}</p>
+              <div className="project-detail-meta">
+                <span><FileText size={14} /> {projectLogs.length} logged entries</span>
+                <span><CalendarDays size={14} /> Development history</span>
+              </div>
+            </div>
+          </article>
+
+          <div className="project-logs-heading">
+            <div>
+              <h2>Project Devlogs</h2>
+              <p className="section-subtitle">The latest work on this project.</p>
+            </div>
+            <span>{projectLogs.length} entries</span>
+          </div>
+
+          {projectLogs.length ? (
+            <div className="project-log-list">
+              {projectLogs.map((log) => (
+                <article className="project-log-row" key={log.id}>
+                  <img
+                    src={log.image}
+                    alt=""
+                    onError={(event) => {
+                      event.currentTarget.style.opacity = "0";
+                    }}
+                  />
+                  <div>
+                    <h3>{log.title}</h3>
+                    <time>{log.date}</time>
+                    <p>{log.description}</p>
+                    <span className="project-log-media">
+                      <ImageIcon size={13} /> {log.images} images
+                      {log.videos ? (
+                        <> · <Video size={13} /> {log.videos} videos</>
+                      ) : null}
+                    </span>
+                  </div>
+                </article>
+              ))}
+            </div>
+          ) : (
+            <div className="timeline-empty">
+              <FolderOpen size={28} />
+              <h2>No devlogs for this project yet</h2>
+              <p>Create a devlog to start recording your progress.</p>
+              <button className="gold-button" onClick={onCreateLog}>
+                <Plus size={15} /> Create devlog
+              </button>
+            </div>
+          )}
+        </>
+      ) : (
+        <>
+          <div className="projects-list-toolbar">
+            <div>
+              <h2>All projects</h2>
+              <p className="section-subtitle">
+                Select a project to explore its development history.
+              </p>
+            </div>
+
+            <label className="projects-search">
+              <Search size={15} />
+              <input
+                value={search}
+                onChange={(event) => setSearch(event.target.value)}
+                placeholder="Search projects..."
+              />
+              {search && (
+                <button onClick={() => setSearch("")} aria-label="Clear search">
+                  <X size={14} />
+                </button>
+              )}
+            </label>
+          </div>
+
+          {filteredProjects.length ? (
+            <div className="projects-page-grid">
+              {filteredProjects.map((project, index) => {
+                const count = logs.filter(
+                  (log) => log.project === project.name
+                ).length;
+
+                return (
+                  <button
+                    className="projects-page-card"
+                    key={project.name}
+                    onClick={() => setActiveProject(project.name)}
+                  >
+                    <div className="projects-page-cover">
+                      <img
+                        src={[
+                          "/ex-image-2",
+                          "/ex-image-5",
+                          "/ex-image-1",
+                          "/ex-image-4",
+                          "/ex-image-3",
+                        ][projects.indexOf(project)]}
+                        alt=""
+                        onError={(event) => {
+                          event.currentTarget.style.opacity = "0";
+                        }}
+                      />
+                      <span
+                        className="projects-page-symbol"
+                        style={{ color: project.color }}
+                      >
+                        {project.icon}
+                      </span>
+                      <span className="projects-page-open">
+                        <ArrowUpRight size={17} />
+                      </span>
+                    </div>
+
+                    <div className="projects-page-card-body">
+                      <div className="projects-page-card-title">
+                        <h3>{project.name}</h3>
+                        <span>{String(index + 1).padStart(2, "0")}</span>
+                      </div>
+                      <p>{descriptions[project.name]}</p>
+                      <div className="projects-page-card-footer">
+                        <span><FileText size={13} /> {count} devlogs</span>
+                        <span>Explore <ArrowRight size={13} /></span>
+                      </div>
+                    </div>
+                  </button>
+                );
+              })}
+            </div>
+          ) : (
+            <div className="timeline-empty">
+              <Search size={28} />
+              <h2>No projects found</h2>
+              <p>Try another project name.</p>
+              <button className="dark-button" onClick={() => setSearch("")}>
+                Clear search
+              </button>
+            </div>
+          )}
+        </>
+      )}
+    </section>
+  );
+}
+
+
+function MediaPage({
+  images,
+  projects,
+}: {
+  images: string[];
+  projects: Project[];
+}) {
+  const [mediaType, setMediaType] = useState("All");
+  const [projectFilter, setProjectFilter] = useState("All");
+  const [query, setQuery] = useState("");
+  const [selected, setSelected] = useState<number | null>(null);
+
+  const mediaItems = useMemo(
+    () =>
+      images.map((src, index) => ({
+        id: index,
+        src,
+        name: `Development Media ${String(index + 1).padStart(2, "0")}`,
+        project: projects[index % projects.length].name,
+        type: "Image",
+      })),
+    [images, projects]
+  );
+
+  const filtered = mediaItems.filter((item) => {
+    const matchesProject =
+      projectFilter === "All" || item.project === projectFilter;
+    const matchesQuery =
+      !query ||
+      `${item.name} ${item.project} ${item.src}`
+        .toLowerCase()
+        .includes(query.toLowerCase());
+
+    return mediaType !== "Videos" && matchesProject && matchesQuery;
+  });
+
+  const activeItem = mediaItems.find((item) => item.id === selected);
+
+  return (
+    <section className="media-page">
+      <div className="media-page-heading">
+        <div>
+          <span className="eyebrow">YOUR CREATIVE ARCHIVE</span>
+          <h1>Media<span>.</span></h1>
+          <p>Renders, screenshots and snapshots from your development journey.</p>
+        </div>
+        <div className="media-total">
+          <ImageIcon size={18} />
+          <strong>{mediaItems.length}</strong>
+          <span>sample images</span>
+        </div>
+      </div>
+
+      <div className="media-page-toolbar">
+        <div className="media-page-tabs">
+          {["All", "Images", "Videos"].map((type) => (
+            <button
+              key={type}
+              className={mediaType === type ? "media-page-tab active" : "media-page-tab"}
+              onClick={() => setMediaType(type)}
+            >
+              {type === "Videos" ? <Video size={15} /> : <ImageIcon size={15} />}
+              {type}
+            </button>
+          ))}
+        </div>
+
+        <label className="media-page-search">
+          <Search size={16} />
+          <input
+            value={query}
+            onChange={(event) => setQuery(event.target.value)}
+            placeholder="Search media..."
+          />
+          {query && (
+            <button onClick={() => setQuery("")} aria-label="Clear search">
+              <X size={14} />
+            </button>
+          )}
+        </label>
+      </div>
+
+      <div className="media-project-filters">
+        {["All", ...projects.map((project) => project.name)].map((name) => (
+          <button
+            key={name}
+            className={projectFilter === name ? "filter-chip chip-active" : "filter-chip"}
+            onClick={() => setProjectFilter(name)}
+          >
+            {name}
+          </button>
+        ))}
+      </div>
+
+      <div className="media-page-results">
+        <span>
+          {mediaType === "Videos"
+            ? "Video gallery"
+            : `${filtered.length} ${filtered.length === 1 ? "item" : "items"}`}
+        </span>
+        <span>{projectFilter === "All" ? "All projects" : projectFilter}</span>
+      </div>
+
+      {mediaType === "Videos" ? (
+        <div className="timeline-empty">
+          <Video size={28} />
+          <h2>No video records yet</h2>
+          <p>Your current sample data contains image paths only. Video support can be connected when media records are added.</p>
+        </div>
+      ) : filtered.length ? (
+        <div className="media-page-grid">
+          {filtered.map((item) => (
+            <button
+              className="media-page-card"
+              key={item.id}
+              onClick={() => setSelected(item.id)}
+            >
+              <div className="media-page-image">
+                <img
+                  src={item.src}
+                  alt={item.name}
+                  onError={(event) => {
+                    event.currentTarget.style.opacity = "0";
+                  }}
+                />
+                <span className="media-page-zoom">
+                  <Search size={17} />
+                </span>
+              </div>
+              <div className="media-page-card-info">
+                <div>
+                  <strong>{item.name}</strong>
+                  <span>{item.project}</span>
+                </div>
+                <ImageIcon size={15} />
+              </div>
+            </button>
+          ))}
+        </div>
+      ) : (
+        <div className="timeline-empty">
+          <Search size={28} />
+          <h2>No media found</h2>
+          <p>Try a different search or project filter.</p>
+          <button
+            className="dark-button"
+            onClick={() => {
+              setQuery("");
+              setProjectFilter("All");
+            }}
+          >
+            Clear filters
+          </button>
+        </div>
+      )}
+
+      {activeItem && (
+        <div
+          className="media-lightbox"
+          onMouseDown={(event) => {
+            if (event.target === event.currentTarget) setSelected(null);
+          }}
+        >
+          <div className="media-lightbox-content">
+            <div className="media-lightbox-header">
+              <div>
+                <strong>{activeItem.name}</strong>
+                <span>{activeItem.project}</span>
+              </div>
+              <button onClick={() => setSelected(null)} aria-label="Close preview">
+                <X size={20} />
+              </button>
+            </div>
+            <img src={activeItem.src} alt={activeItem.name} />
+            <div className="media-lightbox-footer">
+              <span><ImageIcon size={14} /> Image preview</span>
+              <div>
+                <button
+                  disabled={filtered.findIndex((item) => item.id === selected) <= 0}
+                  onClick={() => {
+                    const index = filtered.findIndex((item) => item.id === selected);
+                    if (index > 0) setSelected(filtered[index - 1].id);
+                  }}
+                >
+                  <ChevronLeft size={17} /> Previous
+                </button>
+                <button
+                  disabled={filtered.findIndex((item) => item.id === selected) >= filtered.length - 1}
+                  onClick={() => {
+                    const index = filtered.findIndex((item) => item.id === selected);
+                    if (index < filtered.length - 1) setSelected(filtered[index + 1].id);
+                  }}
+                >
+                  Next <ChevronRight size={17} />
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+    </section>
+  );
+}
+
+
 
 function HomeIcon(props: React.ComponentProps<typeof LayoutDashboard>) { return <LayoutDashboard {...props}/>; }
 
