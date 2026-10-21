@@ -1,0 +1,105 @@
+# Dependencies
+node_modules/
+.pnp/
+.pnp.*
+.npm/
+.yarn/*
+!.yarn/patches
+!.yarn/plugins
+!.yarn/releases
+!.yarn/versions
+
+# Build output
+dist/
+dist-ssr/
+build/
+out/
+coverage/
+*.tsbuildinfo
+
+# Vite
+.vite/
+
+# Environment variables and secrets
+.env
+.env.*
+!.env.example
+!.env.sample
+!.env.template
+
+# Logs
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+pnpm-debug.log*
+lerna-debug.log*
+
+# Local databases and database sidecars
+*.sqlite
+*.sqlite3
+*.db
+*.db-journal
+*.sqlite-shm
+*.sqlite-wal
+
+# Local uploads, caches, generated data
+uploads/
+tmp/
+temp/
+.cache/
+.parcel-cache/
+.turbo/
+.vercel/
+.netlify/
+*.local
+
+# Editor and IDE settings
+.vscode/*
+!.vscode/extensions.json
+!.vscode/settings.example.json
+.idea/
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+*.code-workspace
+
+# OS files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+Desktop.ini
+
+# Test and tooling artifacts
+playwright-report/
+test-results/
+.nyc_output/
+.eslintcache
+.stylelintcache
+
+# TypeScript / framework caches
+.next/
+.nuxt/
+.svelte-kit/
+.angular/
+.storybook-out/
+.tanstack/
+
+# Package-manager / deployment artifacts
+npm-packages-offline-cache/
+.yarn-integrity
+
+# Local secrets, certificates, keys
+*.pem
+*.key
+*.p12
+*.pfx
+*.crt
+*.cer
+secrets/
