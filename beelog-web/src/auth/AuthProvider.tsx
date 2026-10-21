@@ -1,20 +1,7 @@
-import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import type { Session, User } from "@supabase/supabase-js";
 import { isSupabaseConfigured, supabase } from "./supabaseClient";
-
-export type AuthStatus = "checking" | "unconfigured" | "anonymous" | "non-admin" | "admin";
-
-type AuthContextValue = {
-  status: AuthStatus;
-  user: User | null;
-  error: string;
-  busy: boolean;
-  login: (email: string, password: string) => Promise<boolean>;
-  logout: () => Promise<void>;
-  clearError: () => void;
-};
-
-const AuthContext = createContext<AuthContextValue | null>(null);
+import { AuthContext, type AuthContextValue, type AuthStatus } from "./authContext";
 
 const configurationMessage = "Supabase is not configured. BeeLog is running with mock public data in read-only demo mode.";
 
@@ -58,10 +45,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, [client]);
 
   useEffect(() => {
-    if (!client) {
-      setStatus("unconfigured");
-      return;
-    }
+    if (!client) return;
 
     let active = true;
     const subscription = client.auth.onAuthStateChange((_event, session) => {
@@ -163,10 +147,4 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }), [status, user, error, busy, login, logout, clearError]);
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
-}
-
-export function useAdminAuth() {
-  const value = useContext(AuthContext);
-  if (!value) throw new Error("useAdminAuth must be used within AuthProvider");
-  return value;
 }

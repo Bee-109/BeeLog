@@ -7,12 +7,23 @@ import {
   Filter, Pencil, Trash2, FileText, CircleHelp, House
 } from "lucide-react";
 import "./index.css";
-import type { ActivityEntry, DevTag, Devlog, MediaRecord, Project, ProjectCategory } from "./domain/models";
+import type { ActivityEntry, DevTag, Devlog, HomepageContent, MediaRecord, Project, ProjectCategory, ProjectWorkCategory, ProjectWorkItem } from "./domain/models";
 import { mockPortfolioRepository, mockPortfolioSnapshot, type PortfolioRepository } from "./data/mockPortfolioRepository";
 import { SupabasePortfolioRepository } from "./data/supabasePortfolioRepository";
 import { isSupabaseConfigured, supabase } from "./auth/supabaseClient";
-import { useAdminAuth } from "./auth/AuthProvider";
+import { useAdminAuth } from "./auth/authContext";
 import { LoginModal } from "./auth/LoginModal";
+import { defaultDevlogFilters, filterAndSortDevlogs, type DevlogFilters } from "./domain/devlogFilters";
+import { activityLevel, countDevlogsByCreationDate } from "./domain/activityHeatmap";
+import { projectPath, projectSlugFromPath, slugifyProject } from "./domain/projectRoutes";
+
+function summarizeChanges(before: Record<string, unknown>, changes: Record<string, unknown>) {
+  const entries = Object.entries(changes).filter(([key, value]) => JSON.stringify(before[key]) !== JSON.stringify(value));
+  return entries.length ? entries.map(([key, value]) => `${key}: ${JSON.stringify(before[key] ?? "—")} → ${JSON.stringify(value ?? "—")}`).join("; ") : "No visible fields changed.";
+}
+function projectCoverUrl(project: Project, media: MediaRecord[], fallback: string) {
+  return (project.coverMediaId ? media.find((item) => item.id === project.coverMediaId)?.src : undefined) || project.coverImage || fallback;
+}
 
 function App() {
   const { status: authStatus, user, logout } = useAdminAuth();
@@ -26,11 +37,17 @@ function App() {
   const [activeProject, setActiveProject] = useState("All");
   const [activeMedia, setActiveMedia] = useState("Images");
   const [search, setSearch] = useState("");
-  const [month, setMonth] = useState(new Date(2026, 9, 1));
-  const [logs, setLogs] = useState<Devlog[]>(mockPortfolioSnapshot.devlogs);
-  const [categories, setCategories] = useState<ProjectCategory[]>(mockPortfolioSnapshot.categories);
-  const [projects, setProjects] = useState<Project[]>(mockPortfolioSnapshot.projects);
-  const [media, setMedia] = useState<MediaRecord[]>(mockPortfolioSnapshot.media);
+  const [devlogFilters, setDevlogFilters] = useState<DevlogFilters>(defaultDevlogFilters);
+  const [month, setMonth] = useState(() => new Date(new Date().getFullYear(), new Date().getMonth(), 1));
+  const [logs, setLogs] = useState<Devlog[]>(isSupabaseConfigured ? [] : mockPortfolioSnapshot.devlogs);
+  const [categories, setCategories] = useState<ProjectCategory[]>(isSupabaseConfigured ? [] : mockPortfolioSnapshot.categories);
+  const [projects, setProjects] = useState<Project[]>(isSupabaseConfigured ? [] : mockPortfolioSnapshot.projects);
+  const [media, setMedia] = useState<MediaRecord[]>(isSupabaseConfigured ? [] : mockPortfolioSnapshot.media);
+  const [homepage, setHomepage] = useState<HomepageContent>(mockPortfolioSnapshot.homepage!);
+  const [activityTypes, setActivityTypes] = useState<string[]>(mockPortfolioSnapshot.activityTypes ?? []);
+  const [workCategories, setWorkCategories] = useState<ProjectWorkCategory[]>(mockPortfolioSnapshot.workCategories ?? []);
+  const [workItems, setWorkItems] = useState<ProjectWorkItem[]>(mockPortfolioSnapshot.workItems ?? []);
+  const [showHomepageEditor, setShowHomepageEditor] = useState(false);
 
   const [showCreateProject, setShowCreateProject] = useState(false);
   const [newProjectName, setNewProjectName] = useState("");
@@ -42,8 +59,8 @@ function App() {
   const [newCategoryName, setNewCategoryName] = useState("");
   const [newCategoryColor, setNewCategoryColor] = useState("#e8b85a");
   const [newCategoryIcon, setNewCategoryIcon] = useState("◈");
-  const [activity, setActivity] = useState<ActivityEntry[]>(mockPortfolioSnapshot.activity);
-  const [tags, setTags] = useState<DevTag[]>(mockPortfolioSnapshot.tags);
+  const [activity, setActivity] = useState<ActivityEntry[]>(isSupabaseConfigured ? [] : mockPortfolioSnapshot.activity);
+  const [tags, setTags] = useState<DevTag[]>(isSupabaseConfigured ? [] : mockPortfolioSnapshot.tags);
   const [showCreate, setShowCreate] = useState(false);
   const [showAll, setShowAll] = useState(false);
   const [newTitle, setNewTitle] = useState("");
@@ -51,24 +68,33 @@ function App() {
   const [newLogStatus, setNewLogStatus] = useState<"draft" | "published">("published");
   const [selectedTagIds, setSelectedTagIds] = useState<number[]>([]);
   const [newDescription, setNewDescription] = useState("");
+  const [newActivityType, setNewActivityType] = useState("Asset creation");
   const [toast, setToast] = useState("");
   const publicLogs = isAdmin ? logs : logs.filter((log) => log.status === "published");
-  const publicCategories = categories;
   const publicProjects = isAdmin ? projects : projects.filter((project) => project.status === "published");
+  const publishedLogs = logs.filter((log) => log.status === "published");
+  const publishedProjects = projects.filter((project) => project.status === "published");
+  const publishedMedia = media.filter((item) => item.status === "published");
+  const publicCategories = isAdmin ? categories : categories.filter((category) => publicProjects.some((project) => project.categoryId === category.id));
   const publicMedia = isAdmin ? media : media.filter((item) => item.status === "published");
-  const mediaImages = publicMedia.filter((item) => item.type === "image").map((item) => item.src);
+  const safeActiveProject = activeProject === "All" || publicCategories.some((item) => item.name === activeProject) || publicProjects.some((item) => item.name === activeProject) ? activeProject : "All";
+  const safeDevlogFilters = useMemo<DevlogFilters>(() => ({
+    ...devlogFilters,
+    categoryId: devlogFilters.categoryId !== null && publicCategories.some((item) => item.id === devlogFilters.categoryId) ? devlogFilters.categoryId : null,
+    projectId: devlogFilters.projectId !== null && publicProjects.some((item) => item.id === devlogFilters.projectId) ? devlogFilters.projectId : null,
+    tagIds: devlogFilters.tagIds.filter((id) => tags.some((tag) => tag.id === id)),
+  }), [devlogFilters, publicCategories, publicProjects, tags]);
+  const visibleHomepage = isAdmin || homepage.status === "published" ? homepage : mockPortfolioSnapshot.homepage!;
+  const homepageHeroImage = (visibleHomepage.hero.imageMediaId ? publicMedia.find((item) => item.id === visibleHomepage.hero.imageMediaId)?.src : undefined) || visibleHomepage.hero.image || "/ex-image-5.jpg";
+  const dashboardMedia = useMemo(() => [...publicMedia].sort((a, b) => (b.createdAt ? Date.parse(b.createdAt) : 0) - (a.createdAt ? Date.parse(a.createdAt) : 0)).filter((item) => activeMedia === "All" || item.type === activeMedia.toLowerCase().slice(0, -1)), [publicMedia, activeMedia]);
+  const publicActivityCounts = useMemo(() => countDevlogsByCreationDate(publishedLogs), [publishedLogs]);
+  const monthLogs = publishedLogs.filter((log) => { const date = new Date(log.createdAt ?? log.date); return !Number.isNaN(date.getTime()) && date.getFullYear() === month.getFullYear() && date.getMonth() === month.getMonth(); });
+  const monthMedia = publishedMedia.filter((item) => { const date = item.createdAt ? new Date(item.createdAt) : null; return date && date.getFullYear() === month.getFullYear() && date.getMonth() === month.getMonth(); });
+  const monthActiveDays = new Set(monthLogs.map((log) => { const date = new Date(log.createdAt ?? log.date); return date.toDateString(); })).size;
 
   useEffect(() => {
     let active = true;
-    if (isSupabaseConfigured) {
-      setLogs([]);
-      setCategories([]);
-      setProjects([]);
-      setMedia([]);
-      setTags([]);
-      setActivity([]);
-    }
-    void repository.loadSnapshot({ isAdmin }).then((snapshot) => {
+    const loadSnapshot = () => repository.loadSnapshot({ isAdmin }).then((snapshot) => {
       if (!active) return;
       setLogs(snapshot.devlogs);
       setCategories(snapshot.categories);
@@ -76,21 +102,20 @@ function App() {
       setMedia(snapshot.media);
       setTags(snapshot.tags);
       setActivity(snapshot.activity);
+      if (snapshot.homepage) setHomepage(snapshot.homepage);
+      if (snapshot.activityTypes) setActivityTypes(snapshot.activityTypes);
+      if (snapshot.workCategories) setWorkCategories(snapshot.workCategories);
+      if (snapshot.workItems) setWorkItems(snapshot.workItems);
       setDataLoadError("");
     }).catch((error: unknown) => {
       if (!active) return;
       setDataLoadError(error instanceof Error ? error.message : "BeeLog content could not be loaded.");
     });
-    return () => { active = false; };
+    void loadSnapshot();
+    const unsubscribe = repository.subscribe(() => { void loadSnapshot(); }, { isAdmin });
+    const signedUrlRefresh = window.setInterval(() => { void loadSnapshot(); }, 50 * 60 * 1000);
+    return () => { active = false; window.clearInterval(signedUrlRefresh); unsubscribe(); };
   }, [isAdmin, repository]);
-
-  useEffect(() => {
-    if (isAdmin || authStatus === "checking") return;
-    setShowCreate(false);
-    setShowCreateProject(false);
-    setShowCreateCategory(false);
-    if (activeNav === "Activity" || activeNav === "Tags") setActiveNav("Home");
-  }, [isAdmin, authStatus, activeNav]);
 
   function recordActivity(action: ActivityEntry["action"], entity: ActivityEntry["entity"], title: string, project = "Workspace", details?: string) {
     if (isSupabaseConfigured) {
@@ -99,6 +124,16 @@ function App() {
     }
     setActivity((current) => [{ id: Date.now(), action, entity, title, project, details, timestamp: Date.now() }, ...current]);
   }
+
+  const projectDetailRepository: PortfolioRepository = {
+    ...repository,
+    async createWorkCategory(input) { const item = await repository.createWorkCategory(input); recordActivity("created", "Project", item.name, "Development work", "Created a contribution category"); return item; },
+    async updateWorkCategory(id, changes) { const before = workCategories.find((item) => item.id === id); const item = await repository.updateWorkCategory(id, changes); recordActivity("edited", "Project", item.name, "Development work", before ? summarizeChanges(before as unknown as Record<string, unknown>, changes as Record<string, unknown>) : "Updated contribution category"); return item; },
+    async deleteWorkCategory(id) { const before = workCategories.find((item) => item.id === id); await repository.deleteWorkCategory(id); if (before) recordActivity("deleted", "Project", before.name, "Development work", "Deleted a contribution category"); },
+    async createWorkItem(input) { const item = await repository.createWorkItem(input); const parent = projects.find((project) => project.id === item.projectId); recordActivity("created", "Project", item.title, parent?.name ?? "Project", `Added contribution (${item.publicationStatus})`); return item; },
+    async updateWorkItem(id, changes) { const before = workItems.find((item) => item.id === id); const item = await repository.updateWorkItem(id, changes); const parent = projects.find((project) => project.id === item.projectId); recordActivity("edited", "Project", item.title, parent?.name ?? "Project", before ? summarizeChanges(before as unknown as Record<string, unknown>, changes as Record<string, unknown>) : "Updated contribution"); return item; },
+    async deleteWorkItem(id) { const before = workItems.find((item) => item.id === id); await repository.deleteWorkItem(id); if (before) recordActivity("deleted", "Project", before.title, projects.find((project) => project.id === before.projectId)?.name ?? "Project", "Deleted a development contribution"); },
+  };
 
   async function createCategory(e: React.FormEvent) {
     e.preventDefault();
@@ -125,8 +160,8 @@ function App() {
     if (!category) { setToast("Create a project category first"); return; }
     let project: Project;
     try { project = await repository.createProject({
-      name, categoryId: category.id,
-      description: newProjectDescription.trim(), createdAt: Date.now(),
+      name, slug: `${slugifyProject(name)}-${category.id}`, categoryId: category.id,
+      description: newProjectDescription.trim(), createdAt: 0,
       coverImage: "/ex-image-5.jpg", status: newProjectStatus,
       tagIds: [...selectedProjectTagIds],
     }); } catch (error) { setToast(error instanceof Error ? error.message : "Could not create project"); return; }
@@ -141,11 +176,13 @@ function App() {
     recordActivity("created", "Project", name, category.name, `Project added to ${category.name}`);
   }
 
-  const filteredLogs = useMemo(() => publicLogs.filter(log => {
-    const projectMatch = activeProject === "All" || log.project === activeProject || categories.find((category) => category.name === activeProject)?.id === projects.find((project) => project.id === log.projectId)?.categoryId;
-    const q = search.toLowerCase();
-    return projectMatch && (!q || `${log.title} ${log.description} ${log.project}`.toLowerCase().includes(q));
-  }), [publicLogs, activeProject, search]);
+  const filteredLogs = useMemo(() => filterAndSortDevlogs(publicLogs.map((log) => ({
+    ...log,
+    categoryId: log.categoryId ?? projects.find((project) => project.id === log.projectId)?.categoryId,
+  })), { ...safeDevlogFilters, query: search }).filter(log => {
+    const projectMatch = safeActiveProject === "All" || log.project === safeActiveProject || publicCategories.find((category) => category.name === safeActiveProject)?.id === publicProjects.find((project) => project.id === log.projectId)?.categoryId;
+    return projectMatch;
+  }), [publicLogs, safeActiveProject, search, publicCategories, publicProjects, safeDevlogFilters, projects]);
 
   const calendarMonths = useMemo(() => {
     // Show four consecutive months, ending with the selected month.
@@ -161,9 +198,10 @@ function App() {
         Array.from({ length: 7 }, (_, weekday) => {
           const day = week * 7 + weekday - firstWeekday + 1;
           if (day < 1 || day > daysInMonth) return null;
-          const seed = (day * 13 + monthIndex * 7 + year) % 11;
-          const level = seed < 4 ? 0 : seed < 6 ? 1 : seed < 8 ? 2 : seed < 10 ? 3 : 4;
-          return { day, level, month: monthIndex, year };
+          const key = `${year}-${String(monthIndex + 1).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
+          const count = publicActivityCounts.get(key) ?? 0;
+          const level = activityLevel(count);
+          return { day, level, count, month: monthIndex, year };
         })
       );
       return {
@@ -173,16 +211,42 @@ function App() {
         weeks,
       };
     });
-  }, [month]);
+  }, [month, publicActivityCounts]);
   const monthLabel = month.toLocaleDateString("en-US", { month: "short", year: "numeric" });
+  const homeSection = (id: string) => visibleHomepage.sections.find((section) => section.id === id) ?? { id, title: "", visible: true, order: 0 };
+  const featuredHomeProjects = visibleHomepage.hero.featuredProjectIds.map((id) => publicProjects.find((project) => project.id === id)).filter((project): project is Project => Boolean(project));
+  const homeQuote = visibleHomepage.quotes.filter((quote) => quote.active).sort((a, b) => a.order - b.order)[0];
   
 
     
-const timelineLogs = useMemo(() => {
-  return [...filteredLogs].sort(
-    (a, b) => new Date(b.date).getTime() - new Date(a.date).getTime()
-  );
-}, [filteredLogs]);
+const timelineLogs = filteredLogs;
+const readProjectSlug = () => projectSlugFromPath(window.location.pathname);
+const [projectRoute, setProjectRoute] = useState<string | null>(readProjectSlug);
+useEffect(() => {
+  const onPopState = () => setProjectRoute(readProjectSlug());
+  window.addEventListener("popstate", onPopState);
+  return () => window.removeEventListener("popstate", onPopState);
+}, []);
+const openProject = (project: Project) => {
+  const slug = project.slug || slugifyProject(project.name);
+  window.history.pushState({}, "", projectPath(project));
+  setProjectRoute(slug);
+  setActiveNav("Projects");
+};
+const closeProjectRoute = () => {
+  window.history.pushState({}, "", "/projects");
+  setProjectRoute(null);
+  setActiveNav("Projects");
+};
+const navigateToPage = (name: string) => {
+  if (projectRoute) {
+    window.history.pushState({}, "", name === "Projects" ? "/projects" : "/");
+    setProjectRoute(null);
+  }
+  setActiveNav(name);
+  if (name === "Search") document.getElementById("global-search")?.focus();
+};
+  const routedProject = projectRoute ? (isAdmin ? projects : publicProjects).find((project) => (project.slug || slugifyProject(project.name)) === projectRoute) : undefined;
 async function createLog(e: React.FormEvent) {
   e.preventDefault();
   if (!newTitle.trim()) return;
@@ -209,8 +273,8 @@ async function createLog(e: React.FormEvent) {
     time: "Just now",
     tagIds: [...selectedTagIds],
     status: newLogStatus,
+    activityType: newActivityType,
   };
-
   let created: Devlog;
   try { created = await repository.createDevlog(item); }
   catch (error) { setToast(error instanceof Error ? error.message : "Could not create devlog"); return; }
@@ -220,6 +284,7 @@ async function createLog(e: React.FormEvent) {
 
   setNewTitle("");
   setNewDescription("");
+  setNewActivityType("Asset creation");
   setSelectedTagIds([]);
   setNewLogStatus("published");
   setNewProjectId(null);
@@ -235,7 +300,7 @@ async function updateLog(log: Devlog, changes: Partial<Omit<Devlog, "id">>) {
   try {
     const updated = await repository.updateDevlog(log.id, changes);
     setLogs((current) => current.map((item) => item.id === log.id ? updated : item));
-    recordActivity("edited", "Devlog", updated.title, updated.project, `Updated ${Object.keys(changes).join(", ")}`);
+    recordActivity("edited", "Devlog", updated.title, updated.project, summarizeChanges(log as unknown as Record<string, unknown>, changes as Record<string, unknown>));
   } catch (error) { setToast(error instanceof Error ? error.message : "Could not update devlog"); }
 }
 
@@ -261,7 +326,7 @@ async function deleteLog(log: Devlog) {
           ].map(([Icon, label]) => {
             const I = Icon as typeof House;
             const name = label as string;
-            return <button key={name} className={`nav-item ${activeNav === name ? "selected" : ""}`} onClick={() => { setActiveNav(name); if (name === "Search") document.getElementById("global-search")?.focus(); }}>
+            return <button key={name} className={`nav-item ${activeNav === name ? "selected" : ""}`} onClick={() => navigateToPage(name)}>
               <I size={18} strokeWidth={1.8} /><span>{name}</span>
             </button>;
           })}
@@ -269,7 +334,7 @@ async function deleteLog(log: Devlog) {
         <div className="sidebar-divider" />
         <div className="side-section-head"><span>CATEGORIES</span>{isAdmin && <button className="tiny-icon" onClick={() => setShowCreateCategory(true)} aria-label="Create category"><Plus size={16}/></button>}</div>
         <div className="project-list">
-          {categories.map(p => <button key={p.name} className={`project-link ${activeProject === p.name ? "project-active" : ""}`} onClick={() => { setActiveProject(p.name); setActiveNav("Projects"); }}>
+          {publicCategories.map(p => <button key={p.name} className={`project-link ${safeActiveProject === p.name ? "project-active" : ""}`} onClick={() => { setActiveProject(p.name); navigateToPage("Projects"); }}>
             <span className="project-mark" style={{ color: p.color }}>{p.name.trim().charAt(0).toUpperCase()}</span><span>{p.name}</span>
           </button>)}
         </div>
@@ -280,19 +345,24 @@ async function deleteLog(log: Devlog) {
       </aside>
 
       <header className="topbar">
-        <div className="topbar-crumb"><span>BeeLog</span><span className="crumb-slash">/</span><strong>{activeNav}</strong></div>
+        <div className="topbar-crumb"><span>BeeLog</span><span className="crumb-slash">/</span><strong>{projectRoute ? routedProject?.name ?? "Project" : activeNav}</strong></div>
         <label className="global-search"><Search size={16}/><input id="global-search" value={search} onChange={e => setSearch(e.target.value)} placeholder="Search devlogs, projects, tags..."/><kbd>Ctrl K</kbd><button aria-label="Clear search" onClick={() => setSearch("")} className="clear-search">{search && <X size={13}/>}</button></label>
         <div className="topbar-right">{isAdmin ? <button className="login-button" onClick={() => void logout()}>Log out</button> : <><button className="login-button" onClick={() => setShowLogin(true)}>Log In</button>{authStatus === "non-admin" && <button className="auth-signout-link" onClick={() => void logout()}>Sign out</button>}</>}</div>
       </header>
 
       <main className="main-content">
   {dataLoadError && <div className="toast" role="alert">{dataLoadError}<button onClick={() => setDataLoadError("")} aria-label="Dismiss"><X size={14}/></button></div>}
-  {activeNav === "Timeline" ? (
+  {projectRoute ? (routedProject ? <ProjectDetailPage project={routedProject} categories={isAdmin ? categories : publicCategories} category={publicCategories.find((item) => item.id === routedProject.categoryId)} logs={publicLogs.filter((log) => log.projectId === routedProject.id)} media={publicMedia.filter((item) => item.projectId === routedProject.id)} availableMedia={publicMedia} tags={tags} workCategories={workCategories} workItems={workItems.filter((item) => item.projectId === routedProject.id && (isAdmin || item.publicationStatus === "published"))} repository={projectDetailRepository} isAdmin={isAdmin} onBack={closeProjectRoute} onSave={async (changes) => { try { const updated = await repository.updateProject(routedProject.id, changes); setProjects((current) => current.map((item) => item.id === updated.id ? { ...item, ...updated } : item)); recordActivity("edited", "Project", updated.name, "Projects", summarizeChanges(routedProject as unknown as Record<string, unknown>, changes as Record<string, unknown>)); } catch (error) { setToast(error instanceof Error ? error.message : "Could not update project"); throw error; } }} /> : <div className="project-route-empty"><h1>Project not found</h1><button className="dark-button" onClick={closeProjectRoute}>Back to projects</button></div>) : activeNav === "Timeline" ? (
     <TimelinePage
       logs={timelineLogs}
       projects={categories}
+      categories={publicCategories}
+      availableProjects={publicProjects}
       isAdmin={isAdmin}
-      activeProject={activeProject}
+      filters={safeDevlogFilters}
+      setFilters={setDevlogFilters}
+      activityTypes={activityTypes}
+      activeProject={safeActiveProject}
       setActiveProject={setActiveProject}
       search={search}
       setSearch={setSearch}
@@ -307,23 +377,25 @@ async function deleteLog(log: Devlog) {
       <ActivityPage activity={activity} onCreate={() => setShowCreate(true)} />
     ) : activeNav === "Media" ? (
 
-  <MediaPage media={publicMedia} projects={publicProjects} isAdmin={isAdmin}
-    onUpload={async (file, projectId, status = "draft") => { try { const item = await repository.createMedia(file, { name: file.name, projectId, status }); setMedia((current) => [item, ...current]); recordActivity("created", "Media", item.name, "Media", `Uploaded as ${status}`); } catch (error) { setToast(error instanceof Error ? error.message : "Could not upload media"); } }}
-    onUpdate={async (id, changes) => { try { const item = await repository.updateMedia(id, changes); setMedia((current) => current.map((row) => row.id === id ? item : row)); recordActivity("edited", "Media", item.name, "Media", `Updated ${Object.keys(changes).join(", ")}`); } catch (error) { setToast(error instanceof Error ? error.message : "Could not update media"); } }}
+  <MediaPage media={publicMedia} projects={publicProjects} devlogs={publicLogs} isAdmin={isAdmin}
+    onUpload={async (file, projectId, devlogId, status = "draft") => { try { const item = await repository.createMedia(file, { name: file.name, projectId, devlogId, status }); setMedia((current) => [item, ...current]); recordActivity("created", "Media", item.name, "Media", `Uploaded as ${status}`); } catch (error) { setToast(error instanceof Error ? error.message : "Could not upload media"); } }}
+    onUpdate={async (id, changes) => { try { const previous = media.find((row) => row.id === id); const item = await repository.updateMedia(id, changes); setMedia((current) => current.map((row) => row.id === id ? item : row)); recordActivity("edited", "Media", item.name, "Media", previous ? summarizeChanges(previous as unknown as Record<string, unknown>, changes as Record<string, unknown>) : "Updated media metadata"); } catch (error) { setToast(error instanceof Error ? error.message : "Could not update media"); } }}
     onDelete={async (item) => { if (!window.confirm(`Delete media “${item.name}”?`)) return; try { await repository.deleteMedia(item.id); setMedia((current) => current.filter((row) => row.id !== item.id)); recordActivity("deleted", "Media", item.name, "Media"); } catch (error) { setToast(error instanceof Error ? error.message : "Could not delete media"); } }} />
     ) : activeNav === "Projects" ? (
   <ProjectsPage
     projects={publicProjects}
     categories={publicCategories}
+    availableMedia={publicMedia}
     repository={repository}
     setCategories={setCategories}
     setLogs={setLogs}
     tags={tags}
     logs={publicLogs}
     isAdmin={isAdmin}
-    activeProject={activeProject}
+    activeProject={safeActiveProject}
     setActiveProject={setActiveProject}
     setActiveNav={setActiveNav}
+    onOpenProject={openProject}
     search={search}
     setSearch={setSearch}
     onCreateLog={() => { if (!isAdmin) return; const selected = projects.find((project) => project.name === activeProject); setNewProjectId(selected?.id ?? null); setShowCreate(true); }}
@@ -335,56 +407,58 @@ async function deleteLog(log: Devlog) {
   ) : (
     <div className="dashboard-grid">
           <div className="center-column">
-            <section className="hero" style={{ backgroundImage: "linear-gradient(90deg,rgba(10,10,9,.94) 0%,rgba(10,10,9,.70) 42%,rgba(10,10,9,.05) 100%),url('/ex-image-5.jpg')" }}>
+            <section className="hero" style={{ order: -2, backgroundImage: `linear-gradient(90deg,rgba(10,10,9,.94) 0%,rgba(10,10,9,.70) 42%,rgba(10,10,9,.05) 100%),url('${homepageHeroImage.replaceAll("'", "")}')`, backgroundPosition: visibleHomepage.hero.imagePosition || "center" }}>
               <div className="hero-copy"><span className="eyebrow"><span className="live-dot"/> A PERSONAL DEVELOPMENT ARCHIVE</span>
-                <h1>A personal archive of my<br/><em>development journey.</em></h1>
-                <p>Games, 3D art, environments, experiments,<br className="desktop-break"/> ideas and everything in between.</p>
-                <div className="hero-actions"><button className="gold-button" onClick={() => { setActiveNav("Timeline"); setActiveProject("All"); }}>Explore Devlogs <ArrowRight size={15}/></button><button className="dark-button" onClick={() => setActiveNav("Projects")}>View Projects</button></div>
+                <h1>{visibleHomepage.hero.headline}</h1>
+                <p>{visibleHomepage.hero.subtitle}</p>
+                <div className="hero-actions">{visibleHomepage.hero.actionUrl ? <a className="gold-button" href={visibleHomepage.hero.actionUrl}>{visibleHomepage.hero.actionLabel || "Explore"} <ArrowRight size={15}/></a> : <button className="gold-button" onClick={() => { setActiveNav("Timeline"); setActiveProject("All"); }}>{visibleHomepage.hero.actionLabel || "Explore Devlogs"} <ArrowRight size={15}/></button>}<button className="dark-button" onClick={() => setActiveNav("Projects")}>View Projects</button></div>
               </div><span className="hero-index">BEELOG / 001</span>
+              {isAdmin && <button className="homepage-edit-trigger" onClick={() => setShowHomepageEditor(true)}><Pencil size={14}/> Edit homepage</button>}
             </section>
 
-            <section className="stats-row">
+            <section className="stats-row" style={{ order: -1 }}>
               {[
-                {icon:FileText,value:String(publicLogs.length + 124),label:"Total Devlogs"},
-                {icon:Folder,value:String(projects.length),label:"Projects"},
-                {icon:ImageIcon,value:"642",label:"Images"},
-                {icon:Play,value:"37",label:"Videos"},
-                {icon:CalendarDays,value:"74",label:"Active Days"}
+                {icon:FileText,value:String(publishedLogs.length),label:"Devlogs"},
+                {icon:Folder,value:String(publishedProjects.length),label:"Projects"},
+                {icon:ImageIcon,value:String(publishedMedia.filter((item) => item.type === "image").length),label:"Images"},
+                {icon:Play,value:String(publishedMedia.filter((item) => item.type === "video").length),label:"Videos"},
+                {icon:CalendarDays,value:String(new Set(publishedLogs.map((log) => log.createdAt?.slice(0, 10) ?? log.date)).size),label:"Active Days"}
               ].map((s) => <article className="stat-card" key={s.label}><span className="stat-icon"><s.icon size={20}/></span><div><strong>{s.value}</strong><small>{s.label}</small></div></article>)}
             </section>
 
-            <section className="section-block devlogs-section">
-              <div className="section-title-row"><div><h2>Recent Devlogs</h2><p className="section-subtitle">A little progress, captured.</p></div><button className="text-link" onClick={() => { setShowAll(v => !v); setActiveProject("All"); }}>{showAll ? "Show less" : "View all"} <ArrowRight size={14}/></button></div>
+            <section className="section-block devlogs-section" style={{ order: homeSection("recent-devlogs").order, display: homeSection("recent-devlogs").visible ? undefined : "none" }}>
+              <div className="section-title-row"><div><h2>{homeSection("recent-devlogs").title || "Recent Devlogs"}</h2><p className="section-subtitle">{homeSection("recent-devlogs").description || "A little progress, captured."}</p></div><button className="text-link" onClick={() => { setShowAll(v => !v); setActiveProject("All"); }}>{showAll ? "Show less" : "View all"} <ArrowRight size={14}/></button></div>
               <div className="filter-row">
-                {["All", ...categories.map(p => p.name)].map(name => <button key={name} className={`filter-chip ${activeProject === name ? "chip-active" : ""}`} onClick={() => {setActiveProject(name); setShowAll(name !== "All");}}>{name}</button>)}
-                <button className="filter-more" onClick={() => setToast("More filters coming soon")}><Filter size={14}/> Filters</button>
+                {["All", ...publicCategories.map(p => p.name)].map(name => <button key={name} className={`filter-chip ${safeActiveProject === name ? "chip-active" : ""}`} onClick={() => {setActiveProject(name); setShowAll(name !== "All");}}>{name}</button>)}
+                <button className="filter-more" onClick={() => setActiveNav("Timeline")}><Filter size={14}/> Filters</button>
               </div>
               {filteredLogs.length ? <div className="devlog-grid">{(showAll ? filteredLogs : filteredLogs.slice(0,4)).map(log => <article className="devlog-card" key={log.id}>
                 <div className="devlog-image"><img src={log.image} alt="" onError={e => { (e.currentTarget as HTMLImageElement).style.opacity = "0"; }}/><span className={`project-pill pill-${projects.findIndex(p => p.name === log.project)}`}>{log.project}</span>{isAdmin && <button className="card-more" aria-label="More options" onClick={() => setToast(`Options for ${log.title}`)}><MoreHorizontal size={17}/></button>}</div>
-                <div className="devlog-body"><h3>{log.title}</h3><time>{log.date}</time><p>{log.description}</p><div className="card-meta"><span><ImageIcon size={14}/> {log.images} images</span>{log.videos ? <span><Video size={14}/> {log.videos} video</span> : <span><MessageCircle size={14}/> {log.comments} {log.comments === 1 ? "comment" : "comments"}</span>}</div></div>
+                <div className="devlog-body"><h3>{log.title}</h3><time>{log.date}</time><p>{log.description.length > 90 ? `${log.description.slice(0, 87).trimEnd()}…` : log.description}</p><div className="card-meta"><span><ImageIcon size={14}/> {log.images} images</span>{log.videos ? <span><Video size={14}/> {log.videos} video</span> : <span><MessageCircle size={14}/> {log.comments} {log.comments === 1 ? "comment" : "comments"}</span>}</div><TagChips ids={log.tagIds ?? []} tags={tags}/></div>
+                <details className="devlog-quick-preview"><summary>Quick view</summary><div>{log.problemsFaced?.length ? <p><strong>Problems</strong> {log.problemsFaced.join(" · ")}</p> : null}{log.bugsFixed?.length ? <p><strong>Fixes</strong> {log.bugsFixed.join(" · ")}</p> : null}{log.nextPlans?.length ? <p><strong>Next</strong> {log.nextPlans.join(" · ")}</p> : null}{log.externalLinks?.map((link) => <a key={link.id} href={link.url} target="_blank" rel="noreferrer">{link.label} ↗</a>)}</div></details>
               </article>)}</div> : <div className="no-results"><Search size={22}/><strong>No devlogs found</strong><span>Try another project or search term.</span><button onClick={() => {setSearch("");setActiveProject("All");}}>Clear filters</button></div>}
             </section>
 
-            <div className="lower-grid">
-              <section className="section-block projects-section"><div className="section-title-row"><div><h2>Projects</h2><p className="section-subtitle">The worlds you're building.</p></div><button className="text-link" onClick={() => setActiveNav("Projects")}>View all <ArrowRight size={14}/></button></div>
-                <div className="project-cards">{publicProjects.map((p,i) => { const category = categories.find((c) => c.id === p.categoryId); return <button className="project-card" key={p.name} onClick={() => {setActiveProject(p.name);setActiveNav("Projects");}}>
-                  <div className="project-cover"><img src={["/ex-image-2.jpg","/ex-image-5.jpg","/ex-image-1.jpg","/ex-image-4.jpg","/ex-image-3.jpg"][i % 5]} alt="" onError={e => {(e.currentTarget as HTMLImageElement).style.opacity="0"}}/><span className="project-cover-mark" style={{color:category?.color}}>{category?.name.trim().charAt(0).toUpperCase()}</span></div><div className="project-card-copy"><strong>{p.name}</strong><p>{p.description || category?.name}</p><small><FileText size={12}/> {logs.filter(log => log.projectId === p.id).length} devlogs</small></div>
+            <div className="lower-grid" style={{ order: Math.min(homeSection("projects").order, homeSection("latest-media").order, homeSection("heatmap").order) }}>
+              <section className="section-block projects-section" style={{ order: homeSection("projects").order, display: homeSection("projects").visible ? undefined : "none" }}><div className="section-title-row"><div><h2>{homeSection("projects").title || "Projects"}</h2><p className="section-subtitle">{homeSection("projects").description || "The worlds you're building."}</p></div><button className="text-link" onClick={() => setActiveNav("Projects")}>View all <ArrowRight size={14}/></button></div>
+                <div className="project-cards">{(featuredHomeProjects.length ? featuredHomeProjects : publicProjects).map((p,i) => { const category = categories.find((c) => c.id === p.categoryId); return <button className="project-card" key={p.name} onClick={() => openProject(p)}>
+                  <div className="project-cover"><img src={projectCoverUrl(p, publicMedia, ["/ex-image-2.jpg","/ex-image-5.jpg","/ex-image-1.jpg","/ex-image-4.jpg","/ex-image-3.jpg"][i % 5])} alt="" onError={e => {(e.currentTarget as HTMLImageElement).style.opacity="0"}}/><span className="project-cover-mark" style={{color:category?.color}}>{category?.name.trim().charAt(0).toUpperCase()}</span></div><div className="project-card-copy"><strong>{p.name}</strong><p>{p.summary || p.description || category?.name}</p><small><FileText size={12}/> {logs.filter(log => log.projectId === p.id).length} devlogs</small></div>
                 </button>;})}</div>
               </section>
 
-              <section className="section-block media-section"><div className="section-title-row media-title"><div><h2>Latest Media</h2><p className="section-subtitle">Snapshots from the process.</p></div><button className="text-link" onClick={() => setActiveNav("Media")}>View all <ArrowRight size={14}/></button></div>
-                <div className="media-tabs">{["All","Images","Videos"].map(tab => <button key={tab} className={activeMedia===tab?"media-tab-active":""} onClick={() => setActiveMedia(tab)}>{tab}</button>)}</div>
-                <div className="media-mosaic">{mediaImages.slice(0, activeMedia === "Videos" ? 3 : 6).map((src,i) => <button key={`${src}-${i}`} className={`media-thumb media-thumb-${i}`} onClick={() => setToast("Media preview will open here")}><img src={src} alt={`Development media ${i+1}`} onError={e => {(e.currentTarget as HTMLImageElement).style.opacity="0"}}/>{activeMedia==="Videos" && i===0 && <span className="play-overlay"><Play size={18} fill="currentColor"/></span>}</button>)}<button className="media-more" onClick={() => setActiveNav("Media")}>+8</button></div>
-                <div className="calendar-head">
-                  <div><h3>Activity Calendar</h3><span className="section-subtitle">Your consistency over time.</span></div>
+              <section className="section-block media-section" style={{ order: homeSection("latest-media").order, display: homeSection("latest-media").visible || homeSection("heatmap").visible ? undefined : "none" }}><div className="section-title-row media-title" style={{ display: homeSection("latest-media").visible ? undefined : "none" }}><div><h2>{homeSection("latest-media").title || "Latest Media"}</h2><p className="section-subtitle">{homeSection("latest-media").description || "Snapshots from the process."}</p></div><button className="text-link" onClick={() => setActiveNav("Media")}>View all <ArrowRight size={14}/></button></div>
+                <div className="media-tabs" style={{ display: homeSection("latest-media").visible ? undefined : "none" }}>{["All","Images","Videos"].map(tab => <button key={tab} className={activeMedia===tab?"media-tab-active":""} onClick={() => setActiveMedia(tab)}>{tab}</button>)}</div>
+                <div className="media-mosaic" style={{ display: homeSection("latest-media").visible ? undefined : "none" }}>{dashboardMedia.slice(0,6).map((item,i) => <button key={item.id} className={`media-thumb media-thumb-${i}`} onClick={() => setActiveNav("Media")} aria-label={`Browse ${item.name}`} >{item.type === "video" ? <video src={item.src} muted preload="metadata"/> : <img src={item.src} alt={item.altText || item.name} onError={e => {(e.currentTarget as HTMLImageElement).style.opacity="0"}}/>}{item.type === "video" && <span className="play-overlay"><Play size={18} fill="currentColor"/></span>}</button>)}{dashboardMedia.length > 6 && <button className="media-more" onClick={() => setActiveNav("Media")}>+{dashboardMedia.length - 6}</button>}</div>
+                <div className="calendar-head" style={{ display: homeSection("heatmap").visible ? undefined : "none" }}>
+                  <div><h3>{homeSection("heatmap").title || "Activity Calendar"}</h3><span className="section-subtitle">{homeSection("heatmap").description || "Your consistency over time."}</span></div>
                   <div className="month-control">
                     <button onClick={() => setMonth(new Date(month.getFullYear(), month.getMonth() - 1, 1))} aria-label="Previous month"><ChevronLeft size={16}/></button>
                     <strong>{new Date(month.getFullYear(), month.getMonth() - 3, 1).toLocaleDateString("en-US", { month: "short" })} – {monthLabel}</strong>
                     <button onClick={() => setMonth(new Date(month.getFullYear(), month.getMonth() + 1, 1))} aria-label="Next month"><ChevronRight size={16}/></button>
                   </div>
                 </div>
-                <div className="heatmap-legend"><span>Less</span>{[0,1,2,3,4].map(n=><i key={n} className={`heat heat-${n}`}/>)}<span>More</span></div>
-                <div className="heatmap">
+                <div className="heatmap-legend" style={{ display: homeSection("heatmap").visible ? undefined : "none" }}><span>Less</span>{[0,1,2,3,4].map(n=><i key={n} className={`heat heat-${n}`}/>)}<span>More</span></div>
+                <div className="heatmap" style={{ display: homeSection("heatmap").visible ? undefined : "none" }}>
                   <div className="weekday-labels"><span>Mon</span><span>Wed</span><span>Fri</span></div>
                   <div className="heatmap-months">
                     {calendarMonths.map(monthGroup => (
@@ -396,10 +470,10 @@ async function deleteLog(log: Devlog) {
                               {week.map((cell, dayIndex) => cell ? (
                                 <button
                                   key={dayIndex}
-                                  title={`${monthGroup.fullLabel} ${cell.day}: ${cell.level ? cell.level * 2 : 0} contributions`}
-                                  aria-label={`${monthGroup.fullLabel} ${cell.day}: ${cell.level ? cell.level * 2 : 0} contributions`}
+                                  title={`${monthGroup.fullLabel} ${cell.day}: ${cell.count} devlogs`}
+                                  aria-label={`${monthGroup.fullLabel} ${cell.day}: ${cell.count} devlogs`}
                                   className={`heat heat-${cell.level}`}
-                                  onClick={() => setToast(`${monthGroup.fullLabel} ${cell.day}: activity details coming soon`)}
+                                  onClick={() => { const date = `${cell.year}-${String(cell.month + 1).padStart(2, "0")}-${String(cell.day).padStart(2, "0")}`; setDevlogFilters((current) => ({ ...current, dateRange: "custom", startDate: date, endDate: date })); setActiveNav("Timeline"); }}
                                 />
                               ) : <span className="heat-empty" key={dayIndex} />)}
                             </div>
@@ -414,14 +488,14 @@ async function deleteLog(log: Devlog) {
           </div>
 
           <aside className="right-column">
-            <section className="quote-card" style={{backgroundImage:"linear-gradient(90deg,rgba(19,17,13,.88),rgba(19,17,13,.30)),url('/ex-image-2.jpg')"}}><span className="quote-mark">“</span><blockquote>Ideas today,<br/>worlds tomorrow.</blockquote><span className="quote-credit">— Bee</span><span className="quote-doodle">✿</span></section>
-            <section className="right-panel"><div className="panel-heading"><h3>Pinned Projects</h3><button onClick={() => setActiveNav("Projects")} aria-label="View projects"><ArrowRight size={15}/></button></div>
-              {publicProjects.slice(0,3).map((p,i)=>{const category=categories.find((c)=>c.id===p.categoryId);return <button className="pinned-project" key={p.name} onClick={() => {setActiveProject(p.name);setActiveNav("Projects");}}><span className={`pinned-logo pinned-${i}`} style={{color:category?.color}}>{category?.name.trim().charAt(0).toUpperCase()}</span><span className="pinned-info"><strong>{p.name}</strong><span className="pinned-progress"><i style={{width:`${[72,55,35][i]}%`,background:category?.color}}/></span><small>{publicLogs.filter(log => log.projectId === p.id).length} devlogs</small></span><ChevronRight size={15}/></button>;})}
+            {homeQuote && <section className="quote-card" style={{backgroundImage:`linear-gradient(90deg,rgba(19,17,13,.88),rgba(19,17,13,.30)),url('${homepageHeroImage.replaceAll("'", "")}')`}}><span className="quote-mark">“</span><blockquote>{homeQuote.text}</blockquote><span className="quote-credit">— {homeQuote.author || "Bee"}</span><span className="quote-doodle">✿</span></section>}
+            <section className="right-panel" style={{ display: homeSection("projects").visible ? undefined : "none" }}><div className="panel-heading"><h3>Pinned Projects</h3><button onClick={() => setActiveNav("Projects")} aria-label="View projects"><ArrowRight size={15}/></button></div>
+              {(featuredHomeProjects.length ? featuredHomeProjects : publicProjects).slice(0,3).map((p,i)=>{const category=categories.find((c)=>c.id===p.categoryId);const count=publicLogs.filter(log=>log.projectId===p.id).length;const total=Math.max(1,publicLogs.length);return <button className="pinned-project" key={p.name} onClick={() => openProject(p)}><span className={`pinned-logo pinned-${i}`} style={{color:category?.color}}>{category?.name.trim().charAt(0).toUpperCase()}</span><span className="pinned-info"><strong>{p.name}</strong><span className="pinned-progress"><i style={{width:`${Math.round((count/total)*100)}%`,background:category?.color}}/></span><small>{count} devlogs</small></span><ChevronRight size={15}/></button>;})}
             </section>
             <section className="right-panel activity-panel"><div className="panel-heading"><h3>{isAdmin ? "Recent Activity" : "Recent Devlogs"}</h3><button onClick={() => setActiveNav(isAdmin ? "Activity" : "Timeline")} aria-label={isAdmin ? "View activity" : "View timeline"}><ArrowRight size={15}/></button></div>
-              {[...publicLogs].slice(0,5).map((log,i)=><button className="activity-item" key={log.id} onClick={() => setToast(`Opened ${log.title}`)}><span className={`activity-icon activity-${i%4}`}>{i===0?<Code2 size={17}/>:i===1?<Activity size={17}/>:i===2?<MessageCircle size={17}/>:i===3?<Pencil size={17}/>:<FolderOpen size={17}/>}</span><span className="activity-copy"><small>{i===2?"You commented":"You added a devlog"}</small><strong>{log.title}</strong><time>{log.time}</time></span></button>)}
+              {isAdmin ? [...activity].sort((a,b)=>b.timestamp-a.timestamp).slice(0,5).map((entry,i)=><button className="activity-item" key={entry.id} onClick={() => setActiveNav("Activity")}><span className={`activity-icon activity-${i%4}`}>{entry.action === "deleted" ? <Trash2 size={17}/> : entry.action === "edited" ? <Pencil size={17}/> : <Plus size={17}/>}</span><span className="activity-copy"><small>{entry.action} {entry.entity}</small><strong>{entry.title}</strong><time>{new Date(entry.timestamp).toLocaleDateString()}</time></span></button>) : [...publicLogs].slice(0,5).map((log,i)=><button className="activity-item" key={log.id} onClick={() => { setSearch(log.title); setActiveNav("Timeline"); }}><span className={`activity-icon activity-${i%4}`}>{i===0?<Code2 size={17}/>:i===1?<Activity size={17}/>:i===2?<MessageCircle size={17}/>:i===3?<Pencil size={17}/>:<FolderOpen size={17}/>}</span><span className="activity-copy"><small>{log.activityType || "Devlog"}</small><strong>{log.title}</strong><time>{log.date}</time></span></button>)}
             </section>
-            <section className="month-summary"><span className="summary-label">THIS MONTH</span><div className="summary-grid"><div><strong>18</strong><small>Devlogs</small></div><div><strong>96</strong><small>Images</small></div><div><strong>7</strong><small>Videos</small></div><div><strong>12</strong><small>Days active</small></div></div><div className="summary-note"><Flame size={14}/> You're building momentum.</div></section>
+            <section className="month-summary"><span className="summary-label">{month.toLocaleDateString("en-US", { month: "long", year: "numeric" }).toUpperCase()}</span><div className="summary-grid"><div><strong>{monthLogs.length}</strong><small>Devlogs</small></div><div><strong>{monthMedia.filter((item) => item.type === "image").length}</strong><small>Images</small></div><div><strong>{monthMedia.filter((item) => item.type === "video").length}</strong><small>Videos</small></div><div><strong>{monthActiveDays}</strong><small>Days active</small></div></div><div className="summary-note"><Flame size={14}/> {monthActiveDays ? "Activity from published devlogs." : "No published devlogs this month yet."}</div></section>
           </aside>
         </div>
   )}
@@ -439,6 +513,7 @@ async function deleteLog(log: Devlog) {
             </div><label>Title
               <input autoFocus value={newTitle} onChange={e=>setNewTitle(e.target.value)} placeholder="What did you work on?" required maxLength={100}/></label>
             <label>Project (optional)<select value={newProjectId ?? ""} onChange={e=>setNewProjectId(e.target.value ? Number(e.target.value) : null)}><option value="">No linked project</option>{projects.map(p=><option key={p.id} value={p.id}>{p.name}</option>)}</select></label>
+            <label>Activity type<select value={newActivityType} onChange={(event) => setNewActivityType(event.target.value)}>{activityTypes.map((type) => <option key={type}>{type}</option>)}</select></label>
             <label>Visibility<select value={newLogStatus} onChange={(e) => setNewLogStatus(e.target.value as "draft" | "published")}><option value="draft">Draft (admins only)</option><option value="published">Published</option></select></label>
         <label>Description
           <textarea value={newDescription} onChange={e=>setNewDescription(e.target.value)} placeholder="What did you build, learn, or fix?" rows={4}/>
@@ -508,6 +583,7 @@ async function deleteLog(log: Devlog) {
         </div>
       )}
       {isAdmin && showCreateCategory && <div className="modal-backdrop" onMouseDown={(e) => { if (e.target === e.currentTarget) setShowCreateCategory(false); }}><form className="create-modal" onSubmit={createCategory}><div className="modal-head"><div><span className="eyebrow">ORGANIZE YOUR WORK</span><h2>New category</h2></div><button type="button" className="tiny-icon" onClick={() => setShowCreateCategory(false)} aria-label="Close"><X size={18}/></button></div><label>Category name<input autoFocus value={newCategoryName} onChange={(e) => setNewCategoryName(e.target.value)} placeholder="e.g. Unreal Engine" required maxLength={60}/></label><label>Color<input type="color" value={newCategoryColor} onChange={(e) => setNewCategoryColor(e.target.value)}/></label><label>Icon<input value={newCategoryIcon} onChange={(e) => setNewCategoryIcon(e.target.value)} maxLength={3}/></label><div className="modal-actions"><button type="button" className="dark-button" onClick={() => setShowCreateCategory(false)}>Cancel</button><button className="gold-button" type="submit"><Plus size={15}/> Add category</button></div></form></div>}
+      {isAdmin && showHomepageEditor && <HomepageEditor content={homepage} projects={projects} media={media.filter((item) => item.status === "published" && item.type === "image")} activityTypes={activityTypes} onClose={() => setShowHomepageEditor(false)} onSave={async (content, types) => { const saved = await repository.updateHomepage(content); setHomepage(saved); const savedTypes = await repository.setActivityTypes(types); setActivityTypes(savedTypes); setShowHomepageEditor(false); recordActivity("edited", "Homepage", "Homepage content", "Homepage", `${summarizeChanges(homepage as unknown as Record<string, unknown>, content as unknown as Record<string, unknown>)}; activity types: ${activityTypes.join(", ")} → ${types.join(", ")}`); }} />}
       {
         toast && 
         <div className="toast">
@@ -522,6 +598,102 @@ async function deleteLog(log: Devlog) {
 }
 
 
+function HomepageEditor({ content, projects, media, activityTypes, onClose, onSave }: { content: HomepageContent; projects: Project[]; media: MediaRecord[]; activityTypes: string[]; onClose: () => void; onSave: (content: HomepageContent, activityTypes: string[]) => Promise<void> }) {
+  const [draft, setDraft] = useState<HomepageContent>(() => structuredClone(content));
+  const [draftActivityTypes, setDraftActivityTypes] = useState(activityTypes);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
+  const updateHero = (changes: Partial<HomepageContent["hero"]>) => setDraft((current) => ({ ...current, hero: { ...current.hero, ...changes } }));
+  async function submit(event: React.FormEvent<HTMLFormElement>) { event.preventDefault(); setSaving(true); setError(""); try { await onSave({ ...draft, updatedAt: new Date().toISOString() }, draftActivityTypes); } catch (reason) { setError(reason instanceof Error ? reason.message : "Homepage changes could not be saved."); } finally { setSaving(false); } }
+  return <div className="modal-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}><form className="homepage-editor create-modal" onSubmit={submit}><div className="modal-head"><div><span className="eyebrow">HOMEPAGE CMS</span><h2>Edit homepage</h2></div><button type="button" className="tiny-icon" onClick={onClose} aria-label="Close editor"><X size={18}/></button></div>
+    <label>Visibility<select value={draft.status} onChange={(event) => setDraft((current) => ({ ...current, status: event.target.value as HomepageContent["status"] }))}><option value="draft">Draft · admins only</option><option value="published">Published</option><option value="unpublished">Unpublished</option></select></label>
+    <label>Hero image from media<select value={draft.hero.imageMediaId ?? ""} onChange={(event) => updateHero({ imageMediaId: event.target.value ? Number(event.target.value) : undefined })}><option value="">Use image URL below</option>{media.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label>
+    <label>Hero image URL<input type="text" value={draft.hero.image ?? ""} onChange={(event) => updateHero({ image: event.target.value || undefined, imageMediaId: undefined })}/></label>
+    <label>Hero image position<input value={draft.hero.imagePosition ?? "center"} onChange={(event) => updateHero({ imagePosition: event.target.value })}/></label>
+    <label>Headline<input required value={draft.hero.headline} onChange={(event) => updateHero({ headline: event.target.value })}/></label>
+    <label>Subtitle<textarea rows={3} value={draft.hero.subtitle} onChange={(event) => updateHero({ subtitle: event.target.value })}/></label>
+    <label>Hero action label<input value={draft.hero.actionLabel ?? ""} onChange={(event) => updateHero({ actionLabel: event.target.value })}/></label>
+    <label>Hero action URL<input type="url" value={draft.hero.actionUrl ?? ""} onChange={(event) => updateHero({ actionUrl: event.target.value || undefined })} placeholder="Leave empty to open Timeline"/></label>
+    <fieldset><legend>Featured projects</legend>{projects.map((project) => <label className="filter-check" key={project.id}><input type="checkbox" checked={draft.hero.featuredProjectIds.includes(project.id)} onChange={(event) => updateHero({ featuredProjectIds: event.target.checked ? [...draft.hero.featuredProjectIds, project.id] : draft.hero.featuredProjectIds.filter((id) => id !== project.id) })}/>{project.name}</label>)}</fieldset>
+    <fieldset><legend>Homepage quotes</legend>{draft.quotes.map((quote, index) => <div className="homepage-quote-editor" key={quote.id}><label>Quote<textarea rows={2} value={quote.text} onChange={(event) => setDraft((current) => ({ ...current, quotes: current.quotes.map((item, itemIndex) => itemIndex === index ? { ...item, text: event.target.value } : item) }))}/></label><label>Author<input value={quote.author ?? ""} onChange={(event) => setDraft((current) => ({ ...current, quotes: current.quotes.map((item, itemIndex) => itemIndex === index ? { ...item, author: event.target.value } : item) }))}/></label><label className="filter-check"><input type="checkbox" checked={quote.active} onChange={(event) => setDraft((current) => ({ ...current, quotes: current.quotes.map((item, itemIndex) => itemIndex === index ? { ...item, active: event.target.checked } : item) }))}/>Show on homepage</label><button type="button" className="dark-button" onClick={() => setDraft((current) => ({ ...current, quotes: current.quotes.filter((item) => item.id !== quote.id) }))}>Remove quote</button></div>)}<button type="button" className="dark-button" onClick={() => setDraft((current) => ({ ...current, quotes: [...current.quotes, { id: crypto.randomUUID(), text: "", author: "", active: true, order: current.quotes.length, placement: "right-panel" }] }))}><Plus size={14}/> Add quote</button></fieldset>
+    <fieldset><legend>Homepage sections</legend>{draft.sections.slice().sort((a, b) => a.order - b.order).map((section) => <div className="homepage-section-editor" key={section.id}><label>Section title<input value={section.title} onChange={(event) => setDraft((current) => ({ ...current, sections: current.sections.map((item) => item.id === section.id ? { ...item, title: event.target.value } : item) }))}/></label><label>Description<input value={section.description ?? ""} onChange={(event) => setDraft((current) => ({ ...current, sections: current.sections.map((item) => item.id === section.id ? { ...item, description: event.target.value } : item) }))}/></label><label className="filter-check"><input type="checkbox" checked={section.visible} onChange={(event) => setDraft((current) => ({ ...current, sections: current.sections.map((item) => item.id === section.id ? { ...item, visible: event.target.checked } : item) }))}/>Visible</label><div><button type="button" className="dark-button" disabled={section.order <= 0} onClick={() => setDraft((current) => ({ ...current, sections: current.sections.map((item) => item.id === section.id ? { ...item, order: item.order - 1 } : item) }))}>Move up</button><button type="button" className="dark-button" onClick={() => setDraft((current) => ({ ...current, sections: current.sections.map((item) => item.id === section.id ? { ...item, order: item.order + 1 } : item) }))}>Move down</button></div></div>)}</fieldset>
+    <fieldset><legend>Activity type options</legend>{draftActivityTypes.map((type, index) => <div className="homepage-quote-editor" key={`${type}-${index}`}><label>Activity type<input value={type} onChange={(event) => setDraftActivityTypes((current) => current.map((item, itemIndex) => itemIndex === index ? event.target.value : item))}/></label><button type="button" className="dark-button" onClick={() => setDraftActivityTypes((current) => current.filter((_, itemIndex) => itemIndex !== index))}>Remove</button></div>)}<button type="button" className="dark-button" onClick={() => setDraftActivityTypes((current) => [...current, "New activity type"])}><Plus size={14}/> Add activity type</button></fieldset>
+    {error && <p className="auth-form-error" role="alert">{error}</p>}<div className="modal-actions"><button type="button" className="dark-button" onClick={onClose}>Cancel</button><button className="gold-button" disabled={saving}>{saving ? "Saving…" : "Save homepage"}</button></div>
+  </form></div>;
+}
+
+function ProjectDetailPage({ project, categories, category, logs, media, availableMedia, tags, workCategories, workItems, repository, isAdmin, onBack, onSave }: {
+  project: Project;
+  categories: ProjectCategory[];
+  category?: ProjectCategory;
+  logs: Devlog[];
+  media: MediaRecord[];
+  availableMedia: MediaRecord[];
+  tags: DevTag[];
+  workCategories: ProjectWorkCategory[];
+  workItems: ProjectWorkItem[];
+  repository: PortfolioRepository;
+  isAdmin: boolean;
+  onBack: () => void;
+  onSave: (changes: Partial<Omit<Project, "id">>) => Promise<void>;
+}) {
+  const [editing, setEditing] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [workTitle, setWorkTitle] = useState("");
+  const [workDescription, setWorkDescription] = useState("");
+  const [workCategoryId, setWorkCategoryId] = useState("");
+  const [workVisibility, setWorkVisibility] = useState<"draft" | "published">("published");
+  const [newWorkCategory, setNewWorkCategory] = useState("");
+  const [error, setError] = useState("");
+  const [draft, setDraft] = useState(() => ({
+    name: project.name, categoryId: project.categoryId, status: project.status, summary: project.summary ?? project.description, fullDescription: project.fullDescription ?? project.description,
+    role: project.role ?? "", coverImage: project.coverImage ?? "", coverImagePosition: project.coverImagePosition ?? "center", developmentStatus: project.developmentStatus ?? "in-development" as const,
+    coverMediaId: project.coverMediaId?.toString() ?? "",
+    releasePeriod: project.releasePeriod ?? "", primaryActionLabel: project.primaryAction?.label ?? "", primaryActionUrl: project.primaryAction?.url ?? "",
+    tagIds: [...project.tagIds], genres: (project.genres ?? []).join(", "), platforms: (project.platforms ?? []).join(", "), goals: (project.goals ?? []).join("\n"), keyFeatures: (project.keyFeatures ?? []).join("\n"),
+  }));
+  const relatedMedia = media.slice().sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
+  async function save(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault(); setSaving(true); setError("");
+    try {
+      await onSave({ name: draft.name.trim(), categoryId: draft.categoryId, status: draft.status, summary: draft.summary.trim(), description: draft.summary.trim(), fullDescription: draft.fullDescription.trim(), role: draft.role.trim(), coverImage: draft.coverImage.trim(), coverMediaId: draft.coverMediaId ? Number(draft.coverMediaId) : null, coverImagePosition: draft.coverImagePosition,
+        developmentStatus: draft.developmentStatus, releasePeriod: draft.releasePeriod.trim(), primaryAction: draft.primaryActionLabel.trim() && draft.primaryActionUrl.trim() ? { label: draft.primaryActionLabel.trim(), url: draft.primaryActionUrl.trim() } : null,
+        tagIds: draft.tagIds, genres: draft.genres.split(",").map((value) => value.trim()).filter(Boolean), platforms: draft.platforms.split(",").map((value) => value.trim()).filter(Boolean), goals: draft.goals.split("\n").map((value) => value.trim()).filter(Boolean), keyFeatures: draft.keyFeatures.split("\n").map((value) => value.trim()).filter(Boolean),
+      }); setEditing(false);
+    } catch (reason) { setError(reason instanceof Error ? reason.message : "Project changes could not be saved."); }
+    finally { setSaving(false); }
+  }
+  async function addWorkCategory(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault(); const name = newWorkCategory.trim(); if (!name) return;
+    try { await repository.createWorkCategory({ name, order: workCategories.length }); setNewWorkCategory(""); }
+    catch (reason) { setError(reason instanceof Error ? reason.message : "Work category could not be added."); }
+  }
+  async function addWorkItem(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault(); const title = workTitle.trim(); if (!title) return;
+    try {
+      await repository.createWorkItem({ projectId: project.id, categoryId: workCategoryId || undefined, title, description: workDescription.trim(), status: "complete", publicationStatus: workVisibility, mediaIds: [], links: [], technologyIds: [], order: workItems.length });
+      setWorkTitle(""); setWorkDescription("");
+    } catch (reason) { setError(reason instanceof Error ? reason.message : "Work item could not be added."); }
+  }
+  return <article className="rich-project-page">
+    <section className="rich-project-hero" style={{ backgroundPosition: project.coverImagePosition || "center", ...(projectCoverUrl(project, availableMedia, "") ? { backgroundImage: `linear-gradient(90deg,rgba(10,10,9,.96),rgba(10,10,9,.73) 52%,rgba(10,10,9,.28)),linear-gradient(0deg,rgba(10,10,9,.8),transparent 65%),url("${projectCoverUrl(project, availableMedia, "").replaceAll('"', "")}")` } : {}) }}>
+      <div className="rich-project-hero-inner"><button className="project-back-link" onClick={onBack}><ChevronLeft size={15}/> Back to projects</button><div className="rich-project-identity"><div><span className="eyebrow">{category?.name ?? "PROJECT"} {project.releasePeriod ? `· ${project.releasePeriod}` : ""}</span><h1>{project.name}</h1><p>{project.summary || project.description}</p><div className="rich-project-badges"><span>{project.role || category?.name || "Independent project"}</span><span>{(project.developmentStatus ?? "in-development").replaceAll("-", " ")}</span></div><TagChips ids={project.tagIds ?? []} tags={tags}/>{project.primaryAction?.url && <a className="gold-button" href={project.primaryAction.url} target="_blank" rel="noreferrer">{project.primaryAction.label || "View project"}<ArrowUpRight size={15}/></a>}</div></div></div>
+      {project.statistics?.length ? <div className="rich-project-stats">{project.statistics.map((item) => <div key={item.id}><strong>{item.value}</strong><span>{item.label}</span><small>{item.source === "manual" ? "Maintained" : item.source === "external" ? "External" : "Calculated"}</small></div>)}</div> : null}
+    </section>
+    {isAdmin && <div className="project-cover-media-select"><label>Cover media<select value={project.coverMediaId ?? ""} onChange={(event) => void onSave({ coverMediaId: event.target.value ? Number(event.target.value) : null }).catch(() => undefined)}><option value="">Use cover image URL</option>{availableMedia.filter((item) => item.type === "image" && item.status === "published").map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label></div>}
+    <div className="rich-project-content"><div className="rich-project-main">
+      <section><span className="eyebrow">01 — ABOUT THE PROJECT</span><h2>Overview</h2><p className="project-long-description">{project.fullDescription || project.description || "Project details are being prepared."}</p></section>
+      {project.goals?.length ? <section><span className="eyebrow">02 — INTENT</span><h2>Goals</h2><ul>{project.goals.map((goal, index) => <li key={`${goal}-${index}`}>{goal}</li>)}</ul></section> : null}
+      {project.keyFeatures?.length ? <section><span className="eyebrow">03 — WHAT IT DOES</span><h2>Key features</h2><ul>{project.keyFeatures.map((feature, index) => <li key={`${feature}-${index}`}>{feature}</li>)}</ul></section> : null}
+      {(workItems.length > 0 || isAdmin) && <section><span className="eyebrow">04 — CONTRIBUTION</span><h2>Development work</h2>{workItems.length ? <div className="project-work-items">{workItems.slice().sort((a, b) => a.order - b.order).map((item) => <article key={item.id}><div><small>{workCategories.find((categoryItem) => categoryItem.id === item.categoryId)?.name || "Project work"} · {(item.status || "complete").replaceAll("-", " ")}</small><h3>{item.title}</h3><p>{item.description}</p></div>{isAdmin && <div className="project-work-admin-actions"><span>{item.publicationStatus}</span><button className="tiny-icon" onClick={() => { const title = window.prompt("Work item title", item.title); if (!title?.trim()) return; const description = window.prompt("Work item description", item.description); if (description === null) return; void repository.updateWorkItem(item.id, { title: title.trim(), description }).catch((reason: unknown) => setError(reason instanceof Error ? reason.message : "Work item update failed.")); }}>Edit</button><button className="tiny-icon tag-delete-button" onClick={() => { if (window.confirm(`Delete work item “${item.title}”?`)) void repository.deleteWorkItem(item.id).catch((reason: unknown) => setError(reason instanceof Error ? reason.message : "Work item delete failed.")); }}>Delete</button>{item.publicationStatus !== "published" && <button className="tiny-icon" onClick={() => void repository.updateWorkItem(item.id, { publicationStatus: "published" }).catch((reason: unknown) => setError(reason instanceof Error ? reason.message : "Work item update failed."))}>Publish</button>}</div>}</article>)}</div> : <p className="project-work-empty">No published development contributions yet.</p>}{isAdmin && <div className="project-work-manager"><form onSubmit={addWorkItem}><h3>Add contribution</h3><label>Title<input required value={workTitle} onChange={(event) => setWorkTitle(event.target.value)}/></label><label>Description<textarea rows={3} value={workDescription} onChange={(event) => setWorkDescription(event.target.value)}/></label><label>Work category<select value={workCategoryId} onChange={(event) => setWorkCategoryId(event.target.value)}><option value="">Uncategorized</option>{workCategories.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label><label>Visibility<select value={workVisibility} onChange={(event) => setWorkVisibility(event.target.value as typeof workVisibility)}><option value="draft">Draft</option><option value="published">Published</option></select></label><button className="gold-button"><Plus size={14}/> Add work item</button></form><form onSubmit={addWorkCategory}><h3>Work categories</h3>{workCategories.map((item) => <div className="work-category-row" key={item.id}><span>{item.name}</span><button type="button" className="tiny-icon" onClick={() => { const name = window.prompt("Work category name", item.name); if (name?.trim()) void repository.updateWorkCategory(item.id, { name: name.trim() }).catch((reason: unknown) => setError(reason instanceof Error ? reason.message : "Work category update failed.")); }}>Edit</button><button type="button" className="tiny-icon tag-delete-button" onClick={() => { if (window.confirm(`Delete work category “${item.name}”?`)) void repository.deleteWorkCategory(item.id).catch((reason: unknown) => setError(reason instanceof Error ? reason.message : "Work category delete failed.")); }}>Delete</button></div>)}<label>New work category<input value={newWorkCategory} onChange={(event) => setNewWorkCategory(event.target.value)} placeholder="e.g. Multiplayer systems"/></label><button className="dark-button"><Plus size={14}/> Add category</button></form></div>}</section>}
+      {relatedMedia.length > 0 && <section><span className="eyebrow">04 — SELECTED WORK</span><h2>Project media</h2><div className="rich-project-gallery">{relatedMedia.map((item) => item.type === "video" ? <video key={item.id} src={item.src} controls aria-label={item.name}/> : <figure key={item.id}><img src={item.src} alt={item.altText || item.name}/>{item.caption && <figcaption>{item.caption}</figcaption>}</figure>)}</div></section>}
+      {logs.length > 0 && <section><span className="eyebrow">05 — JOURNAL</span><h2>Related devlogs</h2><div className="rich-related-logs">{logs.map((log) => <article key={log.id}><time>{log.date}</time><h3>{log.title}</h3><p>{log.description}</p><TagChips ids={log.tagIds ?? []} tags={tags}/></article>)}</div></section>}
+      {[...[project.problems, project.lessonsLearned, project.futurePlans] as const].map((notes, index) => notes?.length ? <section key={index}><span className="eyebrow">{["06 — CHALLENGES", "07 — TAKEAWAYS", "08 — NEXT STEPS"][index]}</span><h2>{["Problems and solutions", "Lessons learned", "Future plans"][index]}</h2>{notes.map((note) => <article className="rich-note" key={note.id}><h3>{note.heading}</h3><p>{note.content}</p></article>)}</section> : null)}
+    </div><aside className="rich-project-sidebar"><span className="eyebrow">PROJECT DETAILS</span>{project.role && <p><small>ROLE</small><strong>{project.role}</strong></p>}<p><small>STATUS</small><strong>{(project.developmentStatus ?? "in-development").replaceAll("-", " ")}</strong></p>{project.startDate && <p><small>STARTED</small><strong>{project.startDate}</strong></p>}{project.completedDate && <p><small>COMPLETED</small><strong>{project.completedDate}</strong></p>}{project.genres?.length ? <p><small>GENRES</small><strong>{project.genres.join(", ")}</strong></p> : null}{project.platforms?.length ? <p><small>PLATFORMS</small><strong>{project.platforms.join(", ")}</strong></p> : null}{project.technologies?.length ? <p><small>TECHNOLOGIES</small><strong>{project.technologies.map((tech) => tech.name).join(", ")}</strong></p> : null}{project.externalLinks?.map((link) => <a key={link.id} href={link.url} target="_blank" rel="noreferrer">{link.label} <ArrowUpRight size={13}/></a>)}</aside></div>
+    {isAdmin && <div className="rich-project-admin"><button className="dark-button" onClick={() => setEditing((current) => !current)}><Pencil size={14}/>{editing ? "Close editor" : "Edit project details"}</button>{editing && <form className="rich-project-editor" onSubmit={save}><h2>Project details</h2><label>Title<input required value={draft.name} onChange={(event) => setDraft((current) => ({ ...current, name: event.target.value }))}/></label><label>Category<select value={draft.categoryId} onChange={(event) => setDraft((current) => ({ ...current, categoryId: Number(event.target.value) }))}>{categories.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label><label>Publication<select value={draft.status} onChange={(event) => setDraft((current) => ({ ...current, status: event.target.value as Project["status"] }))}><option value="draft">Draft</option><option value="published">Published</option><option value="unpublished">Unpublished</option></select></label><label>Summary<input value={draft.summary} onChange={(event) => setDraft((current) => ({ ...current, summary: event.target.value }))}/></label><label>Full description<textarea rows={6} value={draft.fullDescription} onChange={(event) => setDraft((current) => ({ ...current, fullDescription: event.target.value }))}/></label><label>Cover image URL<input type="text" value={draft.coverImage} onChange={(event) => setDraft((current) => ({ ...current, coverImage: event.target.value }))}/></label><label>Cover image position<input value={draft.coverImagePosition} onChange={(event) => setDraft((current) => ({ ...current, coverImagePosition: event.target.value }))}/></label><label>Role<input value={draft.role} onChange={(event) => setDraft((current) => ({ ...current, role: event.target.value }))}/></label><label>Development status<select value={draft.developmentStatus} onChange={(event) => setDraft((current) => ({ ...current, developmentStatus: event.target.value as typeof current.developmentStatus }))}><option value="in-development">In development</option><option value="on-hold">On hold</option><option value="completed">Completed</option><option value="released">Released</option></select></label><label>Release period<input value={draft.releasePeriod} onChange={(event) => setDraft((current) => ({ ...current, releasePeriod: event.target.value }))}/></label><label>Primary action label<input value={draft.primaryActionLabel} onChange={(event) => setDraft((current) => ({ ...current, primaryActionLabel: event.target.value }))}/></label><label>Primary action URL<input type="url" value={draft.primaryActionUrl} onChange={(event) => setDraft((current) => ({ ...current, primaryActionUrl: event.target.value }))}/></label><label>Genres (comma separated)<input value={draft.genres} onChange={(event) => setDraft((current) => ({ ...current, genres: event.target.value }))}/></label><label>Platforms (comma separated)<input value={draft.platforms} onChange={(event) => setDraft((current) => ({ ...current, platforms: event.target.value }))}/></label><label>Goals (one per line)<textarea rows={3} value={draft.goals} onChange={(event) => setDraft((current) => ({ ...current, goals: event.target.value }))}/></label><label>Key features (one per line)<textarea rows={3} value={draft.keyFeatures} onChange={(event) => setDraft((current) => ({ ...current, keyFeatures: event.target.value }))}/></label><div className="devlog-tag-selector"><span>Project tags</span><TagPicker tags={tags} selected={draft.tagIds} onChange={(tagIds) => setDraft((current) => ({ ...current, tagIds }))} label="Choose tags"/></div>{error && <p role="alert">{error}</p>}<button className="gold-button" disabled={saving}>{saving ? "Saving…" : "Save project"}</button></form>}</div>}
+  </article>;
+}
+
 function TagChips({ ids, tags }: { ids: number[]; tags: DevTag[] }) {
   const assigned = tags.filter((tag) => ids.includes(tag.id));
   if (!assigned.length) return null;
@@ -535,7 +707,12 @@ function TagPicker({ tags, selected, onChange, label }: { tags: DevTag[]; select
 function TimelinePage({
   logs,
   projects,
+  categories,
+  availableProjects,
   isAdmin,
+  filters,
+  setFilters,
+  activityTypes,
   tags,
   activeProject,
   setActiveProject,
@@ -547,7 +724,12 @@ function TimelinePage({
 }: {
   logs: Devlog[];
   projects: ProjectCategory[];
+  categories: ProjectCategory[];
+  availableProjects: Project[];
   isAdmin: boolean;
+  filters: DevlogFilters;
+  setFilters: React.Dispatch<React.SetStateAction<DevlogFilters>>;
+  activityTypes: string[];
   tags: DevTag[];
   activeProject: string;
   setActiveProject: (project: string) => void;
@@ -579,6 +761,19 @@ function TimelinePage({
 
     return groups;
   }, [logs]);
+  const activeFilterChips: { label: string; clear: () => void }[] = [];
+  if (activeProject !== "All") activeFilterChips.push({ label: activeProject, clear: () => setActiveProject("All") });
+  if (filters.categoryId !== null) activeFilterChips.push({ label: categories.find((item) => item.id === filters.categoryId)?.name ?? "Category", clear: () => setFilters((current) => ({ ...current, categoryId: null, projectId: null })) });
+  if (filters.projectId !== null) activeFilterChips.push({ label: availableProjects.find((item) => item.id === filters.projectId)?.name ?? "Project", clear: () => setFilters((current) => ({ ...current, projectId: null })) });
+  for (const id of filters.tagIds) activeFilterChips.push({ label: tags.find((tag) => tag.id === id)?.name ?? "Tag", clear: () => setFilters((current) => ({ ...current, tagIds: current.tagIds.filter((tagId) => tagId !== id) })) });
+  if (filters.dateRange !== "any") activeFilterChips.push({ label: filters.dateRange === "custom" ? `Date ${filters.startDate || "…"} – ${filters.endDate || "…"}` : `Date: ${filters.dateRange}`, clear: () => setFilters((current) => ({ ...current, dateRange: "any", startDate: "", endDate: "" })) });
+  if (filters.activityType !== "all") activeFilterChips.push({ label: filters.activityType, clear: () => setFilters((current) => ({ ...current, activityType: "all" })) });
+  if (filters.contentType !== "all") activeFilterChips.push({ label: `Content: ${filters.contentType}`, clear: () => setFilters((current) => ({ ...current, contentType: "all" })) });
+  if (filters.status !== "all") activeFilterChips.push({ label: filters.status, clear: () => setFilters((current) => ({ ...current, status: "all" })) });
+  for (const [key, label] of [["hasProblems", "Has problems"], ["hasBugsFixed", "Has bugs fixed"], ["hasNextPlans", "Has next plans"], ["hasCode", "Has code"], ["recentlyUpdated", "Recently updated"]] as const) {
+    if (filters[key]) activeFilterChips.push({ label, clear: () => setFilters((current) => ({ ...current, [key]: false })) });
+  }
+  if (search.trim()) activeFilterChips.push({ label: `Search: ${search.trim()}`, clear: () => setSearch("") });
 
   return (
     <section className="timeline-page">
@@ -643,12 +838,28 @@ function TimelinePage({
         </label>
       </div>
 
+      <div className="advanced-filter-grid" aria-label="Devlog filters">
+        <label>Category<select value={filters.categoryId ?? ""} onChange={(event) => setFilters((current) => ({ ...current, categoryId: event.target.value ? Number(event.target.value) : null, projectId: null }))}><option value="">All categories</option>{categories.map((category) => <option key={category.id} value={category.id}>{category.name}</option>)}</select></label>
+        <label>Project<select value={filters.projectId ?? ""} onChange={(event) => setFilters((current) => ({ ...current, projectId: event.target.value ? Number(event.target.value) : null }))}><option value="">All projects</option>{availableProjects.filter((project) => filters.categoryId === null || project.categoryId === filters.categoryId).map((project) => <option key={project.id} value={project.id}>{project.name}</option>)}</select></label>
+        <label>Tags · match all<select multiple value={filters.tagIds.map(String)} onChange={(event) => setFilters((current) => ({ ...current, tagIds: Array.from(event.target.selectedOptions, (option) => Number(option.value)) }))}>{tags.map((tag) => <option key={tag.id} value={tag.id}>{tag.name}</option>)}</select></label>
+        <label>Date created<select value={filters.dateRange} onChange={(event) => setFilters((current) => ({ ...current, dateRange: event.target.value as DevlogFilters["dateRange"] }))}><option value="any">Any time</option><option value="today">Today</option><option value="7d">Last 7 days</option><option value="30d">Last 30 days</option><option value="month">This month</option><option value="year">This year</option><option value="custom">Custom range</option></select></label>
+        {filters.dateRange === "custom" && <><label>From<input type="date" value={filters.startDate} onChange={(event) => setFilters((current) => ({ ...current, startDate: event.target.value }))}/></label><label>To<input type="date" value={filters.endDate} onChange={(event) => setFilters((current) => ({ ...current, endDate: event.target.value }))}/></label></>}
+        <label>Activity<select value={filters.activityType} onChange={(event) => setFilters((current) => ({ ...current, activityType: event.target.value }))}><option value="all">All activity</option>{activityTypes.map((type) => <option key={type}>{type}</option>)}</select></label>
+        <label>Content<select value={filters.contentType} onChange={(event) => setFilters((current) => ({ ...current, contentType: event.target.value as DevlogFilters["contentType"] }))}><option value="all">All content</option><option value="images">Images</option><option value="videos">Videos</option><option value="links">Links</option><option value="multiple-media">Multiple attachments</option><option value="text-only">Text only</option></select></label>
+        <label>Sort<select value={filters.sort} onChange={(event) => setFilters((current) => ({ ...current, sort: event.target.value as DevlogFilters["sort"] }))}><option value="newest">Newest first</option><option value="oldest">Oldest first</option><option value="updated">Recently updated</option><option value="title">Title A–Z</option></select></label>
+        {isAdmin && <label>Status<select value={filters.status} onChange={(event) => setFilters((current) => ({ ...current, status: event.target.value as DevlogFilters["status"] }))}><option value="all">All statuses</option><option value="published">Published</option><option value="draft">Draft</option><option value="unpublished">Unpublished</option></select></label>}
+        {(["hasProblems", "hasBugsFixed", "hasNextPlans", "hasCode", "recentlyUpdated"] as const).map((key) => <label className="filter-check" key={key}><input type="checkbox" checked={filters[key]} onChange={(event) => setFilters((current) => ({ ...current, [key]: event.target.checked }))}/>{{ hasProblems: "Has problems", hasBugsFixed: "Has bugs fixed", hasNextPlans: "Has next plans", hasCode: "Has code", recentlyUpdated: "Recently updated" }[key]}</label>)}
+        <button className="dark-button filter-reset" onClick={() => { setFilters(defaultDevlogFilters); setSearch(""); setActiveProject("All"); }}>Clear all filters</button>
+      </div>
+
+      {activeFilterChips.length > 0 && <div className="active-filter-chips" aria-label="Active filters">{activeFilterChips.map((chip, index) => <button key={`${chip.label}-${index}`} onClick={chip.clear}>{chip.label}<X size={12}/></button>)}</div>}
+
       <div className="timeline-results">
         <span>
           Showing <strong>{logs.length}</strong>{" "}
           {logs.length === 1 ? "entry" : "entries"}
         </span>
-        <span>Newest first</span>
+        <span>{logs.length} matching · {{ newest: "Newest first", oldest: "Oldest first", updated: "Recently updated", title: "Title A–Z" }[filters.sort]}</span>
       </div>
 
       {groupedLogs.length > 0 ? (
@@ -740,13 +951,15 @@ function TimelinePage({
 
 
 function ProjectsPage({
-  projects, categories, tags, logs, isAdmin, activeProject, setActiveProject, repository,
+  projects, categories, tags, logs, isAdmin, activeProject, setActiveProject, repository, onOpenProject, availableMedia,
     setCategories, setLogs, setActiveNav, search, setSearch, onCreateLog, onCreateProject, onRecordActivity,
   setProjects,
 }: {
   projects: Project[];
   categories: ProjectCategory[];
+  availableMedia: MediaRecord[];
   repository: PortfolioRepository;
+  onOpenProject: (project: Project) => void;
   setCategories: React.Dispatch<React.SetStateAction<ProjectCategory[]>>;
   setLogs: React.Dispatch<React.SetStateAction<Devlog[]>>;
   tags: DevTag[];
@@ -948,17 +1161,17 @@ function ProjectsPage({
                   <button
                     className="projects-page-card"
                     key={project.name}
-                    onClick={() => setActiveProject(project.name)}
+                    onClick={() => onOpenProject(project)}
                   >
                     <div className="projects-page-cover">
                       <img
-                        src={[
+                        src={projectCoverUrl(project, availableMedia, [
                           "/ex-image-2.jpg",
                           "/ex-image-5.jpg",
                           "/ex-image-1.jpg",
                           "/ex-image-4.jpg",
                           "/ex-image-3.jpg",
-                        ][projects.indexOf(project)]}
+                        ][projects.indexOf(project)])}
                         alt=""
                         onError={(event) => {
                           event.currentTarget.style.opacity = "0";
@@ -1011,6 +1224,7 @@ function ProjectsPage({
 function MediaPage({
   media,
   projects,
+  devlogs,
   isAdmin,
   onUpload,
   onUpdate,
@@ -1018,9 +1232,10 @@ function MediaPage({
 }: {
   media: MediaRecord[];
   projects: Project[];
+  devlogs: Devlog[];
   isAdmin: boolean;
-  onUpload: (file: File, projectId?: number, status?: "draft" | "published") => void;
-  onUpdate: (id: number, changes: Partial<Pick<MediaRecord, "name" | "projectId" | "status">>) => void;
+  onUpload: (file: File, projectId?: number, devlogId?: number, status?: "draft" | "published") => void;
+  onUpdate: (id: number, changes: Partial<Pick<MediaRecord, "name" | "projectId" | "devlogId" | "status" | "altText" | "caption" | "order">>) => void;
   onDelete: (item: MediaRecord) => void;
 }) {
   const [mediaType, setMediaType] = useState("All");
@@ -1028,6 +1243,7 @@ function MediaPage({
   const [query, setQuery] = useState("");
   const [selected, setSelected] = useState<number | null>(null);
   const [uploadProjectId, setUploadProjectId] = useState<number | undefined>();
+  const [uploadDevlogId, setUploadDevlogId] = useState<number | undefined>();
   const [uploadStatus, setUploadStatus] = useState<"draft" | "published">("draft");
 
   const mediaItems = useMemo(
@@ -1037,6 +1253,7 @@ function MediaPage({
         src: item.src,
         name: item.name,
         project: projects.find((project) => project.id === item.projectId)?.name ?? "Unassigned",
+        caption: item.caption ?? "",
         type: item.type === "video" ? "Video" : "Image",
       })),
     [media, projects]
@@ -1067,12 +1284,12 @@ function MediaPage({
         <div className="media-total">
           <ImageIcon size={18} />
             <strong>{mediaItems.length}</strong>
-          <span>published items</span>
+          <span>{isAdmin ? "media records" : "published items"}</span>
         </div>
-        {isAdmin && <label className="gold-button media-upload-button"><Plus size={15}/> Upload media<input type="file" accept="image/*,video/*" onChange={(event) => { const file = event.target.files?.[0]; if (file) onUpload(file, uploadProjectId, uploadStatus); event.currentTarget.value = ""; }} /></label>}
+        {isAdmin && <label className="gold-button media-upload-button"><Plus size={15}/> Upload media<input type="file" accept="image/*,video/*" onChange={(event) => { const file = event.target.files?.[0]; if (file) onUpload(file, uploadProjectId, uploadDevlogId, uploadStatus); event.currentTarget.value = ""; }} /></label>}
       </div>
 
-      {isAdmin && <div className="media-admin-options"><label>Link to project<select value={uploadProjectId ?? ""} onChange={(event) => setUploadProjectId(event.target.value ? Number(event.target.value) : undefined)}><option value="">No project</option>{projects.map((project) => <option key={project.id} value={project.id}>{project.name}</option>)}</select></label><label>Visibility<select value={uploadStatus} onChange={(event) => setUploadStatus(event.target.value as "draft" | "published")}><option value="draft">Draft</option><option value="published">Published</option></select></label></div>}
+      {isAdmin && <div className="media-admin-options"><label>Link to project<select value={uploadProjectId ?? ""} onChange={(event) => setUploadProjectId(event.target.value ? Number(event.target.value) : undefined)}><option value="">No project</option>{projects.map((project) => <option key={project.id} value={project.id}>{project.name}</option>)}</select></label><label>Link to devlog<select value={uploadDevlogId ?? ""} onChange={(event) => setUploadDevlogId(event.target.value ? Number(event.target.value) : undefined)}><option value="">No devlog</option>{devlogs.map((log) => <option key={log.id} value={log.id}>{log.title}</option>)}</select></label><label>Visibility<select value={uploadStatus} onChange={(event) => setUploadStatus(event.target.value as "draft" | "published")}><option value="draft">Draft</option><option value="published">Published</option></select></label></div>}
 
       <div className="media-page-toolbar">
         <div className="media-page-tabs">
@@ -1139,7 +1356,7 @@ function MediaPage({
               <div className="media-page-image">
                 {item.type === "Video" ? <video src={item.src} muted preload="metadata"/> : <img
                   src={item.src}
-                  alt={item.name}
+                  alt={sourceRecord.altText || item.name}
                   onError={(event) => {
                     event.currentTarget.style.opacity = "0";
                   }}
@@ -1156,7 +1373,8 @@ function MediaPage({
                   {item.type === "Video" ? <Video size={15} /> : <ImageIcon size={15} />}
               </div>
             </button>
-            {isAdmin && <div className="media-admin-actions"><span>{sourceRecord.status === "draft" ? "Draft" : "Published"}</span><button className="tiny-icon" aria-label={`${sourceRecord.status === "draft" ? "Publish" : "Unpublish"} ${item.name}`} onClick={() => onUpdate(item.id, { status: sourceRecord.status === "draft" ? "published" : "draft" })}>{sourceRecord.status === "draft" ? "Publish" : "Unpublish"}</button><button className="tiny-icon" aria-label={`Rename ${item.name}`} onClick={() => { const name = window.prompt("Media name", item.name); if (name?.trim()) onUpdate(item.id, { name: name.trim() }); }}><Pencil size={13}/></button><button className="tiny-icon tag-delete-button" aria-label={`Delete ${item.name}`} onClick={() => onDelete(sourceRecord)}><Trash2 size={13}/></button></div>}
+            {sourceRecord.caption && <p className="media-caption">{sourceRecord.caption}</p>}
+            {isAdmin && <div className="media-admin-actions"><span>{sourceRecord.status === "draft" ? "Draft" : sourceRecord.status === "unpublished" ? "Unpublished" : "Published"}</span><button className="tiny-icon" aria-label={`${sourceRecord.status === "published" ? "Unpublish" : "Publish"} ${item.name}`} onClick={() => onUpdate(item.id, { status: sourceRecord.status === "published" ? "unpublished" : "published" })}>{sourceRecord.status === "published" ? "Unpublish" : "Publish"}</button><button className="tiny-icon" aria-label={`Rename ${item.name}`} onClick={() => { const name = window.prompt("Media name", item.name); if (name?.trim()) onUpdate(item.id, { name: name.trim() }); }}><Pencil size={13}/></button><button className="tiny-icon" aria-label={`Edit caption for ${item.name}`} onClick={() => { const caption = window.prompt("Media caption", sourceRecord.caption ?? ""); if (caption !== null) onUpdate(item.id, { caption }); }}>Caption</button><button className="tiny-icon tag-delete-button" aria-label={`Delete ${item.name}`} onClick={() => onDelete(sourceRecord)}><Trash2 size={13}/></button></div>}
           </article>;
           })}
         </div>
@@ -1196,7 +1414,7 @@ function MediaPage({
             </div>
             {activeItem.type === "Video" ? <video src={activeItem.src} controls autoPlay/> : <img src={activeItem.src} alt={activeItem.name} />}
             <div className="media-lightbox-footer">
-              <span><ImageIcon size={14} /> Image preview</span>
+              <span>{activeItem.type} preview{media.find((record) => record.id === selected)?.caption ? ` · ${media.find((record) => record.id === selected)?.caption}` : ""}</span>
               <div>
                 <button
                   disabled={filtered.findIndex((item) => item.id === selected) <= 0}

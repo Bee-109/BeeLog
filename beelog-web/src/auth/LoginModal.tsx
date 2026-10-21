@@ -1,6 +1,6 @@
 import { useEffect, useState, type FormEvent } from "react";
 import { LogIn, X } from "lucide-react";
-import { useAdminAuth } from "./AuthProvider";
+import { useAdminAuth } from "./authContext";
 
 export function LoginModal({ onClose }: { onClose: () => void }) {
   const { status, error, busy, login, clearError } = useAdminAuth();
