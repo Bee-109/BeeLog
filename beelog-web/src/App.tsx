@@ -1,14 +1,37 @@
 import { useMemo, useState } from "react";
 import {
-  Activity, ArrowDownRight, ArrowRight, ArrowUpRight, CalendarDays, Check,
-  ChevronDown, ChevronLeft, ChevronRight, Code2, Command, Folder, FolderOpen,
-  Image as ImageIcon, LayoutDashboard, MessageCircle, MoreHorizontal, Play,
-  Plus, Search, Settings2, Tag, Video, X, Sun, Moon, Clock3, Flame, Pin,
-  ExternalLink, Filter, Pencil, Trash2, FileText, CircleHelp
+  Activity, ArrowRight, ArrowUpRight, CalendarDays, Check,
+  ChevronDown, ChevronLeft, ChevronRight, Code2, Folder, FolderOpen,
+  Image as ImageIcon, MessageCircle, MoreHorizontal, Play,
+  Plus, Search, Tag, Video, X, Sun, Moon, Flame,
+  Filter, Pencil, Trash2, FileText, CircleHelp, House
 } from "lucide-react";
 import "./index.css";
 
-type Project = { name: string; color: string; count: number; icon: string };
+type ProjectCategory = {
+  name: string;
+  color: string;
+  icon: string;
+};
+
+type Project = {
+  id: number;
+  name: string;
+  category: string;
+  description: string;
+  createdAt: number;
+  color: string;
+  icon: string;
+  tagIds: number[];
+};
+
+type WorkProject = {
+  id: number;
+  workspaceId: number;
+  name: string;
+  description: string;
+  tagIds: number[];
+};
 
 type Devlog = {
   id: number;
@@ -22,6 +45,7 @@ type Devlog = {
   videos?: number;
   time: string;
   tagIds?: number[];
+  workProjectId?: number;
 };
 
 
@@ -31,6 +55,8 @@ type ActivityEntry = {
   action: "created" | "edited" | "deleted";
   title: string;
   project: string;
+  entity: "Devlog" | "Tag" | "Workspace" | "Project";
+  details?: string;
   timestamp: number;
 };
 
@@ -41,21 +67,21 @@ type DevTag = {
 };
 
 
-const projects: Project[] = [
-  { name: "Blender", color: "#f5a34d", count: 42, icon: "◉" },
-  { name: "Roblox Studio", color: "#4da9ff", count: 31, icon: "◆" },
-  { name: "Unreal Engine", color: "#dededb", count: 18, icon: "U" },
-  { name: "Art & Design", color: "#e8b85a", count: 24, icon: "✎" },
-  { name: "Miscellaneous", color: "#e7b04c", count: 13, icon: "▰" },
+const projectCategories: ProjectCategory[] = [
+  { name: "Blender", color: "#f5a34d", icon: "◉" },
+  { name: "Roblox Studio", color: "#4da9ff", icon: "◆" },
+  { name: "Unreal Engine", color: "#dededb", icon: "U" },
+  { name: "Art & Design", color: "#e8b85a", icon: "✎" },
+  { name: "Miscellaneous", color: "#e7b04c", icon: "▰" },
 ];
 
 const initialDevlogs: Devlog[] = [
-  { id: 1, title: "Low Poly Tree Variations", project: "Blender", date: "Oct 19, 2026", description: "Created multiple low poly tree variations for the forest environment. Tested different shapes and textures.", image: "/ex-image-1", images: 6, comments: 1, time: "2 hours ago" },
-  { id: 2, title: "Forest Ruins – Lighting Test", project: "Unreal Engine", date: "Oct 18, 2026", description: "Experimented with volumetric fog and directional lighting. Adjusted exposure and added foliage.", image: "/ex-image-2", images: 8, comments: 2, time: "1 day ago" },
-  { id: 3, title: "Drill Farm – UI Progress", project: "Roblox Studio", date: "Oct 17, 2026", description: "Working on upgrade UI and currency system. Tested different layouts.", image: "/ex-image-3", images: 4, comments: 0, videos: 1, time: "2 days ago" },
-  { id: 4, title: "Cat Companion Concept", project: "Art & Design", date: "Oct 16, 2026", description: "Concept sketches and colour palette for the bee-themed cat companion. Planning for 3D model next.", image: "/ex-image-4", images: 5, comments: 3, time: "3 days ago" },
+  { id: 1, title: "Low Poly Tree Variations", project: "Blender", date: "Oct 19, 2026", description: "Created multiple low poly tree variations for the forest environment. Tested different shapes and textures.", image: "/ex-image-1.jpg", images: 6, comments: 1, time: "2 hours ago" },
+  { id: 2, title: "Forest Ruins – Lighting Test", project: "Unreal Engine", date: "Oct 18, 2026", description: "Experimented with volumetric fog and directional lighting. Adjusted exposure and added foliage.", image: "/ex-image-2.jpg", images: 8, comments: 2, time: "1 day ago" },
+  { id: 3, title: "Drill Farm – UI Progress", project: "Roblox Studio", date: "Oct 17, 2026", description: "Working on upgrade UI and currency system. Tested different layouts.", image: "/ex-image-3.jpg", images: 4, comments: 0, videos: 1, time: "2 days ago" },
+  { id: 4, title: "Cat Companion Concept", project: "Art & Design", date: "Oct 16, 2026", description: "Concept sketches and colour palette for the bee-themed cat companion. Planning for 3D model next.", image: "/ex-image-4.jpg", images: 5, comments: 3, time: "3 days ago" },
 ];
-const mediaImages = ["/ex-image-2", "/ex-image-5", "/ex-image-4", "/ex-image-1", "/ex-image-3", "/ex-image-2", "/ex-image-1"];
+const mediaImages = ["/ex-image-2.jpg", "/ex-image-5.jpg", "/ex-image-4.jpg", "/ex-image-1.jpg", "/ex-image-3.jpg", "/ex-image-2.jpg", "/ex-image-1.jpg"];
 
 function App() {
   const [activeNav, setActiveNav] = useState("Home");
@@ -65,6 +91,19 @@ function App() {
   const [dark, setDark] = useState(true);
   const [month, setMonth] = useState(new Date(2026, 9, 1));
   const [logs, setLogs] = useState(initialDevlogs);
+  const [projects, setProjects] = useState<Project[]>([]);
+  const [workProjects, setWorkProjects] = useState<WorkProject[]>([]);
+
+  const [showCreateProject, setShowCreateProject] = useState(false);
+  const [newProjectName, setNewProjectName] = useState("");
+  const [newProjectCategory, setNewProjectCategory] = useState("Roblox Studio");
+  const [newProjectDescription, setNewProjectDescription] = useState("");
+  const [selectedProjectTagIds, setSelectedProjectTagIds] = useState<number[]>([]);
+  const [showCreateWorkProject, setShowCreateWorkProject] = useState(false);
+  const [newWorkProjectName, setNewWorkProjectName] = useState("");
+  const [newWorkProjectDescription, setNewWorkProjectDescription] = useState("");
+  const [newWorkProjectWorkspaceId, setNewWorkProjectWorkspaceId] = useState<number | null>(null);
+  const [newWorkProjectTagIds, setNewWorkProjectTagIds] = useState<number[]>([]);
   const [activity, setActivity] = useState<ActivityEntry[]>([]);
   const [tags, setTags] = useState<DevTag[]>([
     { id: 1, name: "Low Poly", color: "#e8b85a" },
@@ -77,10 +116,60 @@ function App() {
   const [showCreate, setShowCreate] = useState(false);
   const [showAll, setShowAll] = useState(false);
   const [newTitle, setNewTitle] = useState("");
-  const [newProject, setNewProject] = useState("Blender");
+  const [newProject, setNewProject] = useState("");
+  const [newWorkProjectId, setNewWorkProjectId] = useState<number | null>(null);
   const [selectedTagIds, setSelectedTagIds] = useState<number[]>([]);
   const [newDescription, setNewDescription] = useState("");
   const [toast, setToast] = useState("");
+
+  function recordActivity(action: ActivityEntry["action"], entity: ActivityEntry["entity"], title: string, project = "Workspace", details?: string) {
+    setActivity((current) => [{ id: Date.now(), action, entity, title, project, details, timestamp: Date.now() }, ...current]);
+  }
+
+  function createProject(e: React.FormEvent) {
+    e.preventDefault();
+    const name = newProjectName.trim();
+    if (!name) return;
+    if (projects.some((project) => project.name.toLowerCase() === name.toLowerCase())) {
+      setToast("A project with that name already exists");
+      return;
+    }
+    const category = projectCategories.find((item) => item.name === newProjectCategory) ?? projectCategories[4];
+    const project: Project = {
+      id: Date.now(), name, category: category.name,
+      description: newProjectDescription.trim(), createdAt: Date.now(),
+      color: category.color, icon: category.icon,
+      tagIds: [...selectedProjectTagIds],
+    };
+    setProjects((current) => [...current, project]);
+    setNewProjectName("");
+    setNewProjectDescription("");
+    setSelectedProjectTagIds([]);
+    setShowCreateProject(false);
+    setActiveProject("All");
+    setActiveNav("Projects");
+    recordActivity("created", "Workspace", name, category.name, "Workspace created");
+  }
+
+  function createWorkProject(event: React.FormEvent) {
+    event.preventDefault();
+    const name = newWorkProjectName.trim();
+    if (!name || newWorkProjectWorkspaceId === null) return;
+    if (workProjects.some((project) => project.workspaceId === newWorkProjectWorkspaceId && project.name.toLowerCase() === name.toLowerCase())) {
+      setToast("A project with that name already exists in this workspace");
+      return;
+    }
+    const workspace = projects.find((project) => project.id === newWorkProjectWorkspaceId);
+    const item: WorkProject = { id: Date.now(), workspaceId: newWorkProjectWorkspaceId, name, description: newWorkProjectDescription.trim(), tagIds: [...newWorkProjectTagIds] };
+    setWorkProjects((current) => [...current, item]);
+    recordActivity("created", "Project", name, workspace?.name ?? "Workspace", `Created in ${workspace?.name ?? "workspace"}`);
+    setNewWorkProjectName("");
+    setNewWorkProjectDescription("");
+    setNewWorkProjectTagIds([]);
+    setShowCreateWorkProject(false);
+    setActiveProject(workspace?.name ?? "All");
+    setActiveNav("Projects");
+  }
 
   const filteredLogs = useMemo(() => logs.filter(log => {
     const projectMatch = activeProject === "All" || log.project === activeProject;
@@ -124,44 +213,50 @@ const timelineLogs = useMemo(() => {
     (a, b) => new Date(b.date).getTime() - new Date(a.date).getTime()
   );
 }, [filteredLogs]);
+function createLog(e: React.FormEvent) {
+  e.preventDefault();
+  if (!newTitle.trim()) return;
 
+  const now = new Date();
 
+  const selectedWorkProject = workProjects.find((project) => project.id === newWorkProjectId);
+  const selectedProject = projects.find((project) => project.id === selectedWorkProject?.workspaceId) ?? projects.find((project) => project.name === newProject);
 
-  function createLog(e: React.FormEvent) {
-    e.preventDefault();
-    if (!newTitle.trim()) return;
-    const now = new Date();
-    const item: Devlog = {
-      id: Date.now(), title: newTitle.trim(), project: newProject,
-      date: now.toLocaleDateString("en-US", { month: "short", day: "2-digit", year: "numeric" }),
-      description: newDescription.trim() || "A new development log. Add more details when you're ready.",
-      image: projects.find(p => p.name === newProject)?.name === "Blender" ? "/ex-image-1" : newProject === "Roblox Studio" ? "/ex-image-3" : newProject === "Unreal Engine" ? "/ex-image-2" : "/ex-image-4", 
-      images: 0,
-      comments: 0,
-      time: "Just now",
-      tagIds: [...selectedTagIds],
-    };
-    setLogs(old => [item, ...old]);
-    
-    setActivity(old => [
-    {
-        id: Date.now(),
-        action: "created",
-        title: item.title,
-        project: item.project,
-        timestamp: Date.now(),
-    },
-    ...old,
-    ]);
+  const item: Devlog = {
+    id: Date.now(),
+    title: newTitle.trim(),
+    project: selectedProject?.name ?? "Unassigned",
+    workProjectId: selectedWorkProject?.id,
+    date: now.toLocaleDateString("en-US", {
+      month: "short",
+      day: "2-digit",
+      year: "numeric",
+    }),
+    description:
+      newDescription.trim() ||
+      "A new development log. Add more details when you're ready.",
+    image: "/ex-image-1.jpg",
+    images: 0,
+    comments: 0,
+    time: "Just now",
+    tagIds: [...selectedTagIds],
+  };
 
-    setNewTitle("");
-    setNewDescription("");
-    setSelectedTagIds([]);
-    setShowCreate(false);
-    setActiveProject("All"); setActiveNav("Home");
-    setToast("Devlog added to this dashboard");
-    window.setTimeout(() => setToast(""), 2600);
-  }
+  setLogs((old) => [item, ...old]);
+
+  recordActivity("created", "Devlog", item.title, item.project, selectedTagIds.length ? `Tags: ${tags.filter((tag) => selectedTagIds.includes(tag.id)).map((tag) => tag.name).join(", ")}` : undefined);
+
+  setNewTitle("");
+  setNewDescription("");
+  setSelectedTagIds([]);
+  setNewWorkProjectId(null);
+  setShowCreate(false);
+  setActiveProject("All");
+  setActiveNav("Home");
+
+  setToast("Devlog added to this dashboard");
+  window.setTimeout(() => setToast(""), 2600);
+}
 
   return (
     <div className={`app-shell ${dark ? "theme-dark" : "theme-light"}`}>
@@ -170,11 +265,11 @@ const timelineLogs = useMemo(() => {
           <span className="brand-bee">✿</span><span className="brand-copy"><strong>BeeLog</strong><small>DEVELOPMENT ARCHIVE</small></span>
         </button>
         <nav className="primary-nav">
-          {[
-            [HomeIcon,"Home"], [FileText, "Timeline"], [Folder, "Projects"],
+          {[ 
+            [House,"Home"], [FileText, "Timeline"], [Folder, "Projects"],
             [ImageIcon, "Media"], [Activity, "Activity"], [Tag, "Tags"]
           ].map(([Icon, label]) => {
-            const I = Icon as typeof Home;
+            const I = Icon as typeof House;
             const name = label as string;
             return <button key={name} className={`nav-item ${activeNav === name ? "selected" : ""}`} onClick={() => { setActiveNav(name); if (name === "Search") document.getElementById("global-search")?.focus(); }}>
               <I size={18} strokeWidth={1.8} /><span>{name}</span>
@@ -182,13 +277,13 @@ const timelineLogs = useMemo(() => {
           })}
         </nav>
         <div className="sidebar-divider" />
-        <div className="side-section-head"><span>PROJECTS</span><button className="tiny-icon" onClick={() => setShowCreate(true)} aria-label="Create devlog"><Plus size={16}/></button></div>
+        <div className="side-section-head"><span>WORKSPACES</span><button className="tiny-icon" onClick={() => setShowCreateProject(true)} aria-label="Create workspace"><Plus size={16}/></button></div>
         <div className="project-list">
           {projects.map(p => <button key={p.name} className={`project-link ${activeProject === p.name ? "project-active" : ""}`} onClick={() => { setActiveProject(p.name); setActiveNav("Projects"); }}>
             <span className="project-mark" style={{ color: p.color }}>{p.icon}</span><span>{p.name}</span>
           </button>)}
         </div>
-        <div className="sidebar-art" style={{ backgroundImage: "linear-gradient(0deg,rgba(11,11,10,.94),rgba(11,11,10,.1)),url('/ex-image-5')" }}>
+        <div className="sidebar-art" style={{ backgroundImage: "linear-gradient(0deg,rgba(11,11,10,.94),rgba(11,11,10,.1)),url('/ex-image-5.jpg')" }}>
           <span className="sidebar-art-icon">☻</span><p>Building ideas,<br/>one step at a time.</p>
         </div>
         <button className="side-profile" onClick={() => setToast("Profile settings coming soon")}>
@@ -212,34 +307,45 @@ const timelineLogs = useMemo(() => {
       search={search}
       setSearch={setSearch}
       onCreate={() => setShowCreate(true)}
+      tags={tags}
+      workProjects={workProjects}
     />
     ) : activeNav === "Tags" ? (
-      <TagsPage tags={tags} setTags={setTags} />
+      <TagsPage tags={tags} setTags={setTags} logs={logs} projects={projects} workProjects={workProjects} onActivity={recordActivity} />
     ) : activeNav === "Activity" ? (
-      <ActivityPage
-        activity={activity}
-        projects={projects}
-        onCreate={() => setShowCreate(true)}
-      />
+      <ActivityPage activity={activity} onCreate={() => setShowCreate(true)} />
     ) : activeNav === "Media" ? (
 
   <MediaPage images={mediaImages} projects={projects} />
     ) : activeNav === "Projects" ? (
   <ProjectsPage
     projects={projects}
+    workProjects={workProjects}
+    tags={tags}
     logs={logs}
     activeProject={activeProject}
     setActiveProject={setActiveProject}
     setActiveNav={setActiveNav}
     search={search}
     setSearch={setSearch}
-    onCreateLog={() => setShowCreate(true)}
+    onCreateLog={() => { const workspace = projects.find((project) => project.name === activeProject) ?? projects[0]; setNewProject(workspace?.name ?? ""); setNewWorkProjectId(workProjects.find((project) => project.workspaceId === workspace?.id)?.id ?? null); setShowCreate(true); }}
+    onCreateProject={() => setShowCreateProject(true)}
+    onCreateWorkProject={() => {
+      const workspace = projects.find((project) => project.name === activeProject) ?? projects[0];
+      if (!workspace) { setToast("Create a workspace first"); return; }
+      setNewWorkProjectWorkspaceId(workspace?.id ?? null);
+      setShowCreateWorkProject(true);
+    }}
+    onRecordActivity={recordActivity}
+    setProjects={setProjects}
+    setWorkProjects={setWorkProjects}
+    setLogs={setLogs}
   />
 
   ) : (
     <div className="dashboard-grid">
           <div className="center-column">
-            <section className="hero" style={{ backgroundImage: "linear-gradient(90deg,rgba(10,10,9,.94) 0%,rgba(10,10,9,.70) 42%,rgba(10,10,9,.05) 100%),url('/ex-image-5')" }}>
+            <section className="hero" style={{ backgroundImage: "linear-gradient(90deg,rgba(10,10,9,.94) 0%,rgba(10,10,9,.70) 42%,rgba(10,10,9,.05) 100%),url('/ex-image-5.jpg')" }}>
               <div className="hero-copy"><span className="eyebrow"><span className="live-dot"/> A PERSONAL DEVELOPMENT ARCHIVE</span>
                 <h1>A personal archive of my<br/><em>development journey.</em></h1>
                 <p>Games, 3D art, environments, experiments,<br className="desktop-break"/> ideas and everything in between.</p>
@@ -250,11 +356,11 @@ const timelineLogs = useMemo(() => {
             <section className="stats-row">
               {[
                 {icon:FileText,value:String(logs.length + 124),label:"Total Devlogs"},
-                {icon:Folder,value:"5",label:"Projects"},
+                {icon:Folder,value:String(projects.length),label:"Projects"},
                 {icon:ImageIcon,value:"642",label:"Images"},
                 {icon:Play,value:"37",label:"Videos"},
                 {icon:CalendarDays,value:"74",label:"Active Days"}
-              ].map((s,i) => <article className="stat-card" key={s.label}><span className="stat-icon"><s.icon size={20}/></span><div><strong>{s.value}</strong><small>{s.label}</small></div></article>)}
+              ].map((s) => <article className="stat-card" key={s.label}><span className="stat-icon"><s.icon size={20}/></span><div><strong>{s.value}</strong><small>{s.label}</small></div></article>)}
             </section>
 
             <section className="section-block devlogs-section">
@@ -272,7 +378,7 @@ const timelineLogs = useMemo(() => {
             <div className="lower-grid">
               <section className="section-block projects-section"><div className="section-title-row"><div><h2>Projects</h2><p className="section-subtitle">The worlds you're building.</p></div><button className="text-link" onClick={() => setActiveNav("Projects")}>View all <ArrowRight size={14}/></button></div>
                 <div className="project-cards">{projects.map((p,i) => <button className="project-card" key={p.name} onClick={() => {setActiveProject(p.name);setActiveNav("Projects");}}>
-                  <div className="project-cover"><img src={["/ex-image-2","/ex-image-5","/ex-image-1","/ex-image-4","/ex-image-3"][i]} alt="" onError={e => {(e.currentTarget as HTMLImageElement).style.opacity="0"}}/><span className="project-cover-mark" style={{color:p.color}}>{p.icon}</span></div><div className="project-card-copy"><strong>{p.name}</strong><p>{["3D modelling, environments, assets and renders.","Game development, systems and builds.","Level design, lighting, environments and gameplay.","UI concepts, textures, illustrations and graphics.","Random ideas, tools, learning and everything else."][i]}</p><small><FileText size={12}/> {p.count} devlogs</small></div>
+                  <div className="project-cover"><img src={["/ex-image-2.jpg","/ex-image-5.jpg","/ex-image-1.jpg","/ex-image-4.jpg","/ex-image-3.jpg"][i % 5]} alt="" onError={e => {(e.currentTarget as HTMLImageElement).style.opacity="0"}}/><span className="project-cover-mark" style={{color:p.color}}>{p.icon}</span></div><div className="project-card-copy"><strong>{p.name}</strong><p>{p.description || p.category}</p><small><FileText size={12}/> {logs.filter(log => log.project === p.name).length} devlogs</small></div>
                 </button>)}</div>
               </section>
 
@@ -318,9 +424,9 @@ const timelineLogs = useMemo(() => {
           </div>
 
           <aside className="right-column">
-            <section className="quote-card" style={{backgroundImage:"linear-gradient(90deg,rgba(19,17,13,.88),rgba(19,17,13,.30)),url('/ex-image-2')"}}><span className="quote-mark">“</span><blockquote>Ideas today,<br/>worlds tomorrow.</blockquote><span className="quote-credit">— Bee</span><span className="quote-doodle">✿</span></section>
+            <section className="quote-card" style={{backgroundImage:"linear-gradient(90deg,rgba(19,17,13,.88),rgba(19,17,13,.30)),url('/ex-image-2.jpg')"}}><span className="quote-mark">“</span><blockquote>Ideas today,<br/>worlds tomorrow.</blockquote><span className="quote-credit">— Bee</span><span className="quote-doodle">✿</span></section>
             <section className="right-panel"><div className="panel-heading"><h3>Pinned Projects</h3><button onClick={() => setActiveNav("Projects")} aria-label="View projects"><ArrowRight size={15}/></button></div>
-              {projects.slice(0,3).map((p,i)=><button className="pinned-project" key={p.name} onClick={() => {setActiveProject(p.name);setActiveNav("Projects");}}><span className={`pinned-logo pinned-${i}`} style={{color:p.color}}>{p.icon}</span><span className="pinned-info"><strong>{p.name}</strong><span className="pinned-progress"><i style={{width:`${[72,55,35][i]}%`,background:p.color}}/></span><small>{p.count} devlogs</small></span><ChevronRight size={15}/></button>)}
+              {projects.slice(0,3).map((p,i)=><button className="pinned-project" key={p.name} onClick={() => {setActiveProject(p.name);setActiveNav("Projects");}}><span className={`pinned-logo pinned-${i}`} style={{color:p.color}}>{p.icon}</span><span className="pinned-info"><strong>{p.name}</strong><span className="pinned-progress"><i style={{width:`${[72,55,35][i]}%`,background:p.color}}/></span><small>{logs.filter(log => log.project === p.name).length} devlogs</small></span><ChevronRight size={15}/></button>)}
             </section>
             <section className="right-panel activity-panel"><div className="panel-heading"><h3>Recent Activity</h3><button onClick={() => setActiveNav("Activity")} aria-label="View activity"><ArrowRight size={15}/></button></div>
               {[...logs].slice(0,5).map((log,i)=><button className="activity-item" key={log.id} onClick={() => setToast(`Opened ${log.title}`)}><span className={`activity-icon activity-${i%4}`}>{i===0?<Code2 size={17}/>:i===1?<Activity size={17}/>:i===2?<MessageCircle size={17}/>:i===3?<Pencil size={17}/>:<FolderOpen size={17}/>}</span><span className="activity-copy"><small>{i===2?"You commented":"You added a devlog"}</small><strong>{log.title}</strong><time>{log.time}</time></span></button>)}
@@ -341,7 +447,8 @@ const timelineLogs = useMemo(() => {
             <X size={18}/>
             </button>
             </div><label>Title
-              <input autoFocus value={newTitle} onChange={e=>setNewTitle(e.target.value)} placeholder="What did you work on?" required maxLength={100}/></label><label>Project<select value={newProject} onChange={e=>setNewProject(e.target.value)}>{projects.map(p=><option key={p.name}>{p.name}</option>)}</select></label>
+              <input autoFocus value={newTitle} onChange={e=>setNewTitle(e.target.value)} placeholder="What did you work on?" required maxLength={100}/></label><label>Workspace<select value={newProject} onChange={e=>setNewProject(e.target.value)}><option value="">Unassigned</option>{projects.map(p=><option key={p.name} value={p.name}>{p.name}</option>)}</select></label>
+            <label>Project<select value={newWorkProjectId ?? ""} onChange={(e) => { const id = e.target.value ? Number(e.target.value) : null; setNewWorkProjectId(id); const selected = workProjects.find((project) => project.id === id); const workspace = projects.find((project) => project.id === selected?.workspaceId); if (workspace) setNewProject(workspace.name); }}><option value="">No specific project</option>{workProjects.map((project) => <option key={project.id} value={project.id}>{project.name}</option>)}</select></label>
         <label>Description
           <textarea value={newDescription} onChange={e=>setNewDescription(e.target.value)} placeholder="What did you build, learn, or fix?" rows={4}/>
         </label>
@@ -394,6 +501,32 @@ const timelineLogs = useMemo(() => {
         </div>
       </form>
       </div>}
+      {showCreateProject && (
+        <div className="modal-backdrop" onMouseDown={(e) => { if (e.target === e.currentTarget) setShowCreateProject(false); }}>
+          <form className="create-modal" onSubmit={createProject}>
+            <div className="modal-head"><div><span className="eyebrow">ORGANIZE YOUR WORK</span><h2>New workspace</h2></div>
+              <button type="button" className="tiny-icon" onClick={() => setShowCreateProject(false)} aria-label="Close"><X size={18}/></button>
+            </div>
+            <label>Workspace name<input autoFocus value={newProjectName} onChange={(e) => setNewProjectName(e.target.value)} placeholder="e.g. Blender, Unreal Engine" required maxLength={60}/></label>
+            <label>Category<select value={newProjectCategory} onChange={(e) => setNewProjectCategory(e.target.value)}>{projectCategories.map((category) => <option key={category.name} value={category.name}>{category.name}</option>)}</select></label>
+            <label>Description<textarea value={newProjectDescription} onChange={(e) => setNewProjectDescription(e.target.value)} placeholder="A short description (optional)" rows={3}/></label>
+            <TagPicker tags={tags} selected={selectedProjectTagIds} onChange={setSelectedProjectTagIds} label="Workspace tags" />
+            <div className="modal-actions"><button type="button" className="dark-button" onClick={() => setShowCreateProject(false)}>Cancel</button><button className="gold-button" type="submit"><Plus size={15}/> Add workspace</button></div>
+          </form>
+        </div>
+      )}
+      {showCreateWorkProject && (
+        <div className="modal-backdrop" onMouseDown={(e) => { if (e.target === e.currentTarget) setShowCreateWorkProject(false); }}>
+          <form className="create-modal" onSubmit={createWorkProject}>
+            <div className="modal-head"><div><span className="eyebrow">ADD WORK UNDER A WORKSPACE</span><h2>New project</h2></div><button type="button" className="tiny-icon" onClick={() => setShowCreateWorkProject(false)} aria-label="Close"><X size={18}/></button></div>
+            <label>Workspace<select value={newWorkProjectWorkspaceId ?? ""} onChange={(e) => setNewWorkProjectWorkspaceId(e.target.value ? Number(e.target.value) : null)} required><option value="">Choose workspace</option>{projects.map((project) => <option key={project.id} value={project.id}>{project.name}</option>)}</select></label>
+            <label>Project name<input autoFocus value={newWorkProjectName} onChange={(e) => setNewWorkProjectName(e.target.value)} placeholder="e.g. Finished a simulator game" required maxLength={80}/></label>
+            <label>Description<textarea value={newWorkProjectDescription} onChange={(e) => setNewWorkProjectDescription(e.target.value)} placeholder="What is this project about?" rows={3}/></label>
+            <TagPicker tags={tags} selected={newWorkProjectTagIds} onChange={setNewWorkProjectTagIds} label="Project tags" />
+            <div className="modal-actions"><button type="button" className="dark-button" onClick={() => setShowCreateWorkProject(false)}>Cancel</button><button className="gold-button" type="submit"><Plus size={15}/> Create project</button></div>
+          </form>
+        </div>
+      )}
       {
         toast && 
         <div className="toast">
@@ -407,9 +540,21 @@ const timelineLogs = useMemo(() => {
 }
 
 
+function TagChips({ ids, tags }: { ids: number[]; tags: DevTag[] }) {
+  const assigned = tags.filter((tag) => ids.includes(tag.id));
+  if (!assigned.length) return null;
+  return <div className="assigned-tags" aria-label="Tags">{assigned.map((tag) => <span key={tag.id} style={{ "--tag-color": tag.color } as React.CSSProperties}><i />{tag.name}</span>)}</div>;
+}
+
+function TagPicker({ tags, selected, onChange, label }: { tags: DevTag[]; selected: number[]; onChange: (ids: number[]) => void; label: string }) {
+  return <div className="devlog-tag-selector"><div className="devlog-tag-heading"><span>{label}</span><small>{selected.length ? `${selected.length} selected` : "Optional"}</small></div>{tags.length ? <div className="devlog-tag-options">{tags.map((tag) => { const active = selected.includes(tag.id); return <button type="button" key={tag.id} className={`devlog-tag-option ${active ? "selected" : ""}`} style={{ "--tag-color": tag.color } as React.CSSProperties} aria-pressed={active} onClick={() => onChange(active ? selected.filter((id) => id !== tag.id) : [...selected, tag.id])}><span className="devlog-tag-dot"/>{tag.name}{active && <Check size={13}/>}</button>; })}</div> : <p className="devlog-tag-empty">Create tags first on the Tags page.</p>}</div>;
+}
+
 function TimelinePage({
   logs,
   projects,
+  tags,
+  workProjects,
   activeProject,
   setActiveProject,
   search,
@@ -418,6 +563,8 @@ function TimelinePage({
 }: {
   logs: Devlog[];
   projects: Project[];
+  tags: DevTag[];
+  workProjects: WorkProject[];
   activeProject: string;
   setActiveProject: (project: string) => void;
   search: string;
@@ -558,6 +705,7 @@ function TimelinePage({
                           >
                             {log.project}
                           </span>
+                          {log.workProjectId && <span className="project-child-pill">{workProjects.find((item) => item.id === log.workProjectId)?.name}</span>}
                           <time>{log.time}</time>
                         </div>
 
@@ -574,6 +722,7 @@ function TimelinePage({
                             {log.comments} comments
                           </span>
                         </div>
+                        <TagChips ids={log.tagIds ?? []} tags={tags} />
                       </div>
                     </article>
                   );
@@ -608,6 +757,8 @@ function TimelinePage({
 
 function ProjectsPage({
   projects,
+  workProjects,
+  tags,
   logs,
   activeProject,
   setActiveProject,
@@ -615,8 +766,16 @@ function ProjectsPage({
   search,
   setSearch,
   onCreateLog,
+  onCreateProject,
+  onCreateWorkProject,
+  onRecordActivity,
+  setProjects,
+  setWorkProjects,
+  setLogs,
 }: {
   projects: Project[];
+  workProjects: WorkProject[];
+  tags: DevTag[];
   logs: Devlog[];
   activeProject: string;
   setActiveProject: (project: string) => void;
@@ -624,6 +783,12 @@ function ProjectsPage({
   search: string;
   setSearch: (value: string) => void;
   onCreateLog: () => void;
+  onCreateProject: () => void;
+  onCreateWorkProject: () => void;
+  onRecordActivity: (action: ActivityEntry["action"], entity: ActivityEntry["entity"], title: string, project?: string, details?: string) => void;
+  setProjects: React.Dispatch<React.SetStateAction<Project[]>>;
+  setWorkProjects: React.Dispatch<React.SetStateAction<WorkProject[]>>;
+  setLogs: React.Dispatch<React.SetStateAction<Devlog[]>>;
 }) {
   const descriptions: Record<string, string> = {
     Blender: "3D modelling, low-poly assets, materials, animation and renders.",
@@ -638,7 +803,7 @@ function ProjectsPage({
     return (
       !query ||
       project.name.toLowerCase().includes(query) ||
-      (descriptions[project.name] ?? "").toLowerCase().includes(query)
+      (project.description || descriptions[project.name] || "").toLowerCase().includes(query)
     );
   });
 
@@ -658,14 +823,15 @@ function ProjectsPage({
           <h1>{selectedProject ? selectedProject.name : "Projects"}<span>.</span></h1>
           <p>
             {selectedProject
-              ? descriptions[selectedProject.name]
+              ? selectedProject.description || descriptions[selectedProject.name] || `${selectedProject.category} project.`
               : "Every world, experiment and idea you're bringing to life."}
           </p>
         </div>
 
-        <button className="gold-button" onClick={onCreateLog}>
-          <Plus size={16} /> New Devlog
-        </button>
+        <div className="projects-heading-actions">
+          <button className="dark-button" onClick={onCreateProject}><Plus size={16} /> New Workspace</button>
+          <button className="gold-button" onClick={onCreateLog}><FileText size={16} /> New Devlog</button>
+        </div>
       </div>
 
       <div className="projects-overview-stats">
@@ -705,6 +871,8 @@ function ProjectsPage({
             >
               Open Timeline <ArrowRight size={14} />
             </button>
+            <button className="tiny-icon" aria-label="Edit workspace" title="Edit workspace" onClick={() => { const name = window.prompt("Workspace name", selectedProject.name); if (!name?.trim()) return; const description = window.prompt("Workspace description", selectedProject.description); const nextName = name.trim(); setProjects((current) => current.map((project) => project.id === selectedProject.id ? { ...project, name: nextName, description: description ?? project.description } : project)); setLogs((current) => current.map((log) => log.project === selectedProject.name ? { ...log, project: nextName } : log)); setActiveProject(nextName); onRecordActivity("edited", "Workspace", nextName, "Workspaces", `Name or description changed from “${selectedProject.name}”`); }}><Pencil size={15}/></button>
+            <button className="tiny-icon tag-delete-button" aria-label="Delete workspace" title="Delete workspace" onClick={() => { if (!window.confirm(`Delete workspace “${selectedProject.name}” and its projects?`)) return; const children = workProjects.filter((item) => item.workspaceId === selectedProject.id); setProjects((current) => current.filter((project) => project.id !== selectedProject.id)); setWorkProjects((current) => current.filter((item) => item.workspaceId !== selectedProject.id)); onRecordActivity("deleted", "Workspace", selectedProject.name, "Workspaces", `Deleted workspace and ${children.length} contained projects`); setActiveProject("All"); }}><Trash2 size={15}/></button>
           </div>
 
           <article className="project-detail-card">
@@ -717,13 +885,30 @@ function ProjectsPage({
             <div className="project-detail-copy">
               <span className="eyebrow">PROJECT OVERVIEW</span>
               <h2>{selectedProject.name}</h2>
-              <p>{descriptions[selectedProject.name]}</p>
+              <p>{selectedProject.description || descriptions[selectedProject.name] || `${selectedProject.category} project.`}</p>
               <div className="project-detail-meta">
                 <span><FileText size={14} /> {projectLogs.length} logged entries</span>
                 <span><CalendarDays size={14} /> Development history</span>
               </div>
             </div>
           </article>
+
+          <div className="project-work-section">
+            <div className="project-logs-heading"><div><h2>Projects in {selectedProject.name}</h2><p className="section-subtitle">Specific games, assets, or other work within this workspace.</p></div><button className="gold-button" onClick={onCreateWorkProject}><Plus size={15}/> Create project</button></div>
+            {selectedProject.tagIds.length > 0 && <TagChips ids={selectedProject.tagIds} tags={tags} />}
+            {workProjects.filter((item) => item.workspaceId === selectedProject.id).length ? (
+              <div className="projects-page-grid">
+                {workProjects.filter((item) => item.workspaceId === selectedProject.id).map((item) => (
+                  <article className="projects-page-card work-project-card" key={item.id}>
+                    <div className="projects-page-cover"><img src="/ex-image-5.jpg" alt=""/><span className="projects-page-symbol" style={{ color: selectedProject.color }}>{selectedProject.icon}</span></div>
+                    <div className="projects-page-card-body"><div className="projects-page-card-title"><h3>{item.name}</h3><span>{selectedProject.name}</span></div><p>{item.description || "Project inside this workspace."}</p><span className="project-log-media"><FileText size={13}/>{logs.filter((log) => log.workProjectId === item.id).length} devlogs</span><TagChips ids={item.tagIds} tags={tags}/>
+                      <div className="project-manage-actions"><button className="tiny-icon" onClick={() => { const name = window.prompt("Edit project name", item.name); if (!name?.trim()) return; const description = window.prompt("Edit project description", item.description); setWorkProjects((current) => current.map((entry) => entry.id === item.id ? { ...entry, name: name.trim(), description: description ?? entry.description } : entry)); onRecordActivity("edited", "Project", name.trim(), selectedProject.name, `Name or description changed from “${item.name}”`); }} aria-label={`Edit ${item.name}`}><Pencil size={14}/></button><button className="tiny-icon tag-delete-button" onClick={() => { if (!window.confirm(`Delete project “${item.name}”?`)) return; setWorkProjects((current) => current.filter((entry) => entry.id !== item.id)); onRecordActivity("deleted", "Project", item.name, selectedProject.name, "Project deleted"); }} aria-label={`Delete ${item.name}`}><Trash2 size={14}/></button></div>
+                    </div>
+                  </article>
+                ))}
+              </div>
+            ) : <div className="timeline-empty"><FolderOpen size={24}/><h2>No projects in this workspace yet</h2><p>Create one here, then attach devlogs and tags as you work.</p><button className="gold-button" onClick={onCreateWorkProject}><Plus size={15}/> Create project</button></div>}
+          </div>
 
           <div className="project-logs-heading">
             <div>
@@ -748,6 +933,7 @@ function ProjectsPage({
                     <h3>{log.title}</h3>
                     <time>{log.date}</time>
                     <p>{log.description}</p>
+                    <TagChips ids={log.tagIds ?? []} tags={tags}/>
                     <span className="project-log-media">
                       <ImageIcon size={13} /> {log.images} images
                       {log.videos ? (
@@ -810,11 +996,11 @@ function ProjectsPage({
                     <div className="projects-page-cover">
                       <img
                         src={[
-                          "/ex-image-2",
-                          "/ex-image-5",
-                          "/ex-image-1",
-                          "/ex-image-4",
-                          "/ex-image-3",
+                          "/ex-image-2.jpg",
+                          "/ex-image-5.jpg",
+                          "/ex-image-1.jpg",
+                          "/ex-image-4.jpg",
+                          "/ex-image-3.jpg",
                         ][projects.indexOf(project)]}
                         alt=""
                         onError={(event) => {
@@ -837,7 +1023,8 @@ function ProjectsPage({
                         <h3>{project.name}</h3>
                         <span>{String(index + 1).padStart(2, "0")}</span>
                       </div>
-                      <p>{descriptions[project.name]}</p>
+                      <p>{project.description || descriptions[project.name] || `${project.category} workspace.`}</p>
+                      <TagChips ids={project.tagIds} tags={tags}/>
                       <div className="projects-page-card-footer">
                         <span><FileText size={13} /> {count} devlogs</span>
                         <span>Explore <ArrowRight size={13} /></span>
@@ -882,7 +1069,7 @@ function MediaPage({
         id: index,
         src,
         name: `Development Media ${String(index + 1).padStart(2, "0")}`,
-        project: projects[index % projects.length].name,
+        project: projects.length ? projects[index % projects.length].name : "Unassigned",
         type: "Image",
       })),
     [images, projects]
@@ -1086,7 +1273,7 @@ function ActivityPage({
         const matchesFilter = filter === "All" || entry.action === filter.toLowerCase();
         const matchesSearch =
           !query ||
-          `${entry.title} ${entry.project} ${entry.action}`
+          `${entry.title} ${entry.project} ${entry.action} ${entry.entity} ${entry.details ?? ""}`
             .toLowerCase()
             .includes(query.toLowerCase());
 
@@ -1096,9 +1283,9 @@ function ActivityPage({
   }, [activity, filter, query]);
 
   function actionLabel(action: ActivityEntry["action"]) {
-    if (action === "created") return "Created devlog";
-    if (action === "edited") return "Edited devlog";
-    return "Deleted devlog";
+    if (action === "created") return "Created";
+    if (action === "edited") return "Edited";
+    return "Deleted";
   }
 
   function actionIcon(action: ActivityEntry["action"]) {
@@ -1113,7 +1300,7 @@ function ActivityPage({
         <div>
           <span className="eyebrow">YOUR WORKSPACE HISTORY</span>
           <h1>Activity<span>.</span></h1>
-          <p>A record of the changes you make to your devlogs.</p>
+          <p>New devlogs, projects, workspaces, and tag changes in one feed.</p>
         </div>
 
         <button className="gold-button" onClick={onCreate}>
@@ -1170,7 +1357,7 @@ function ActivityPage({
 
                 <div className="activity-feed-content">
                   <div className="activity-feed-top">
-                    <strong>{actionLabel(entry.action)}</strong>
+                    <strong>{actionLabel(entry.action)} {entry.entity.toLowerCase()}</strong>
                     <time title={date.toLocaleString()}>
                       {date.toLocaleDateString("en-US", {
                         month: "short",
@@ -1186,12 +1373,13 @@ function ActivityPage({
                   </div>
 
                   <h3>{entry.title}</h3>
+                  {entry.details && <p className="activity-entry-details">{entry.details}</p>}
 
                   <div className="activity-feed-meta">
                     <span className="activity-feed-project">
                       {entry.project}
                     </span>
-                    <span>Devlog</span>
+                    <span>{entry.entity}</span>
                   </div>
                 </div>
               </article>
@@ -1205,7 +1393,7 @@ function ActivityPage({
           <p>
             {activity.length
               ? "Try another filter or search term."
-              : "Create your first devlog and its creation will appear here."}
+              : "Create a devlog, project, workspace, or tag to start the activity feed."}
           </p>
           {activity.length ? (
             <button
@@ -1233,9 +1421,17 @@ function ActivityPage({
 function TagsPage({
   tags,
   setTags,
+  logs,
+  projects,
+  workProjects,
+  onActivity,
 }: {
   tags: DevTag[];
   setTags: React.Dispatch<React.SetStateAction<DevTag[]>>;
+  logs: Devlog[];
+  projects: Project[];
+  workProjects: WorkProject[];
+  onActivity: (action: ActivityEntry["action"], entity: ActivityEntry["entity"], title: string, project?: string, details?: string) => void;
 }) {
   const [query, setQuery] = useState("");
   const [newName, setNewName] = useState("");
@@ -1270,6 +1466,7 @@ function TagsPage({
     ]);
     setNewName("");
     setError("");
+    onActivity("created", "Tag", name, "Tags", `Color ${newColor}`);
   }
 
   function startEditing(tag: DevTag) {
@@ -1296,6 +1493,7 @@ function TagsPage({
       return;
     }
 
+    const previous = tags.find((tag) => tag.id === editingId);
     setTags((current) =>
       current.map((tag) =>
         tag.id === editingId
@@ -1306,12 +1504,14 @@ function TagsPage({
 
     setEditingId(null);
     setError("");
+    if (previous) onActivity("edited", "Tag", name, "Tags", `Changed ${previous.name} → ${name}; color ${previous.color} → ${editingColor}`);
   }
 
   function deleteTag(tag: DevTag) {
     if (!window.confirm(`Delete the "${tag.name}" tag?`)) return;
 
     setTags((current) => current.filter((item) => item.id !== tag.id));
+    onActivity("deleted", "Tag", tag.name, "Tags", `Removed from ${logs.filter((log) => log.tagIds?.includes(tag.id)).length} devlogs, ${workProjects.filter((project) => project.tagIds.includes(tag.id)).length} projects, and ${projects.filter((project) => project.tagIds.includes(tag.id)).length} workspaces`);
 
     if (editingId === tag.id) setEditingId(null);
     setError("");
@@ -1479,8 +1679,8 @@ function TagsPage({
                   </div>
 
                   <div className="tag-card-bottom">
-                    <span>Devlogs using this tag</span>
-                    <strong>0</strong>
+                    <span>Devlogs and workspaces using this tag</span>
+                    <strong>{logs.filter((log) => log.tagIds?.includes(tag.id)).length + projects.filter((project) => project.tagIds.includes(tag.id)).length + workProjects.filter((project) => project.tagIds.includes(tag.id)).length}</strong>
                   </div>
                 </>
               )}
@@ -1510,7 +1710,5 @@ function TagsPage({
 }
 
 
-
-function HomeIcon(props: React.ComponentProps<typeof LayoutDashboard>) { return <LayoutDashboard {...props}/>; }
 
 export default App;

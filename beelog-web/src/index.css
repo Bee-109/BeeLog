@@ -2314,6 +2314,13 @@ button:focus-visible,input:focus-visible,textarea:focus-visible,select:focus-vis
   margin-bottom: 28px;
 }
 
+.projects-heading-actions {
+  display: flex;
+  flex: 0 0 auto;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
 .projects-page-heading h1 {
   margin: 10px 0 8px;
   font-size: clamp(32px, 4vw, 44px);
@@ -2322,6 +2329,55 @@ button:focus-visible,input:focus-visible,textarea:focus-visible,select:focus-vis
 
 .projects-page-heading h1 span {
   color: var(--gold, #e8b85a);
+}
+
+.assigned-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+  margin-top: 10px;
+}
+
+.assigned-tags > span {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 8px;
+  border: 1px solid color-mix(in srgb, var(--tag-color) 40%, transparent);
+  border-radius: 999px;
+  color: var(--tag-color);
+  background: color-mix(in srgb, var(--tag-color) 10%, transparent);
+  font-size: 10px;
+  line-height: 1.2;
+}
+
+.assigned-tags i {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--tag-color);
+}
+
+.project-manage-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 5px;
+  margin-top: 10px;
+}
+
+.project-child-pill {
+  padding: 4px 7px;
+  border: 1px solid var(--border, #302f2b);
+  border-radius: 5px;
+  color: var(--muted, #99958d);
+  font-size: 10px;
+}
+
+.activity-entry-details {
+  margin: -4px 0 12px;
+  color: var(--muted, #99958d);
+  font-size: 12px;
+  line-height: 1.5;
 }
 
 .projects-page-heading p {
@@ -2666,6 +2722,10 @@ button:focus-visible,input:focus-visible,textarea:focus-visible,select:focus-vis
   .projects-page-heading {
     align-items: flex-start;
     flex-direction: column;
+  }
+
+  .projects-heading-actions {
+    width: 100%;
   }
 
   .projects-overview-stats {
