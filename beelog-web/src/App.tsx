@@ -9,10 +9,37 @@ import {
 import "./index.css";
 
 type Project = { name: string; color: string; count: number; icon: string };
+
 type Devlog = {
-  id: number; title: string; project: string; date: string; description: string;
-  image: string; images: number; comments: number; videos?: number; time: string;
+  id: number;
+  title: string;
+  project: string;
+  date: string;
+  description: string;
+  image: string;
+  images: number;
+  comments: number;
+  videos?: number;
+  time: string;
+  tagIds?: number[];
 };
+
+
+
+type ActivityEntry = {
+  id: number;
+  action: "created" | "edited" | "deleted";
+  title: string;
+  project: string;
+  timestamp: number;
+};
+
+type DevTag = {
+  id: number;
+  name: string;
+  color: string;
+};
+
 
 const projects: Project[] = [
   { name: "Blender", color: "#f5a34d", count: 42, icon: "◉" },
@@ -38,10 +65,20 @@ function App() {
   const [dark, setDark] = useState(true);
   const [month, setMonth] = useState(new Date(2026, 9, 1));
   const [logs, setLogs] = useState(initialDevlogs);
+  const [activity, setActivity] = useState<ActivityEntry[]>([]);
+  const [tags, setTags] = useState<DevTag[]>([
+    { id: 1, name: "Low Poly", color: "#e8b85a" },
+    { id: 2, name: "3D Modeling", color: "#f5a34d" },
+    { id: 3, name: "Environment", color: "#72b7a1" },
+    { id: 4, name: "UI", color: "#7db9f2" },
+    { id: 5, name: "Bug Fix", color: "#e78378" },
+    { id: 6, name: "Optimization", color: "#b49bea" },
+  ]);
   const [showCreate, setShowCreate] = useState(false);
   const [showAll, setShowAll] = useState(false);
   const [newTitle, setNewTitle] = useState("");
   const [newProject, setNewProject] = useState("Blender");
+  const [selectedTagIds, setSelectedTagIds] = useState<number[]>([]);
   const [newDescription, setNewDescription] = useState("");
   const [toast, setToast] = useState("");
 
@@ -98,11 +135,29 @@ const timelineLogs = useMemo(() => {
       id: Date.now(), title: newTitle.trim(), project: newProject,
       date: now.toLocaleDateString("en-US", { month: "short", day: "2-digit", year: "numeric" }),
       description: newDescription.trim() || "A new development log. Add more details when you're ready.",
-      image: projects.find(p => p.name === newProject)?.name === "Blender" ? "/ex-image-1" : newProject === "Roblox Studio" ? "/ex-image-3" : newProject === "Unreal Engine" ? "/ex-image-2" : "/ex-image-4",
-      images: 0, comments: 0, time: "Just now"
+      image: projects.find(p => p.name === newProject)?.name === "Blender" ? "/ex-image-1" : newProject === "Roblox Studio" ? "/ex-image-3" : newProject === "Unreal Engine" ? "/ex-image-2" : "/ex-image-4", 
+      images: 0,
+      comments: 0,
+      time: "Just now",
+      tagIds: [...selectedTagIds],
     };
     setLogs(old => [item, ...old]);
-    setNewTitle(""); setNewDescription(""); setShowCreate(false);
+    
+    setActivity(old => [
+    {
+        id: Date.now(),
+        action: "created",
+        title: item.title,
+        project: item.project,
+        timestamp: Date.now(),
+    },
+    ...old,
+    ]);
+
+    setNewTitle("");
+    setNewDescription("");
+    setSelectedTagIds([]);
+    setShowCreate(false);
     setActiveProject("All"); setActiveNav("Home");
     setToast("Devlog added to this dashboard");
     window.setTimeout(() => setToast(""), 2600);
@@ -116,8 +171,8 @@ const timelineLogs = useMemo(() => {
         </button>
         <nav className="primary-nav">
           {[
-            [HomeIcon, "Home"], [FileText, "Timeline"], [Folder, "Projects"],
-            [ImageIcon, "Media"], [Search, "Search"], [Activity, "Activity"], [Tag, "Tags"]
+            [HomeIcon,"Home"], [FileText, "Timeline"], [Folder, "Projects"],
+            [ImageIcon, "Media"], [Activity, "Activity"], [Tag, "Tags"]
           ].map(([Icon, label]) => {
             const I = Icon as typeof Home;
             const name = label as string;
@@ -158,7 +213,16 @@ const timelineLogs = useMemo(() => {
       setSearch={setSearch}
       onCreate={() => setShowCreate(true)}
     />
+    ) : activeNav === "Tags" ? (
+      <TagsPage tags={tags} setTags={setTags} />
+    ) : activeNav === "Activity" ? (
+      <ActivityPage
+        activity={activity}
+        projects={projects}
+        onCreate={() => setShowCreate(true)}
+      />
     ) : activeNav === "Media" ? (
+
   <MediaPage images={mediaImages} projects={projects} />
     ) : activeNav === "Projects" ? (
   <ProjectsPage
@@ -268,8 +332,75 @@ const timelineLogs = useMemo(() => {
         <footer className="page-footer"><span>✿ BeeLog</span><span>Ideas today, worlds tomorrow.</span><button onClick={() => setToast("Help centre coming soon")}><CircleHelp size={13}/> Help</button></footer>
       </main>
 
-      {showCreate && <div className="modal-backdrop" onMouseDown={e => {if(e.target===e.currentTarget)setShowCreate(false)}}><form className="create-modal" onSubmit={createLog}><div className="modal-head"><div><span className="eyebrow">CAPTURE YOUR PROGRESS</span><h2>New devlog</h2></div><button type="button" className="tiny-icon" onClick={() => setShowCreate(false)} aria-label="Close"><X size={18}/></button></div><label>Title<input autoFocus value={newTitle} onChange={e=>setNewTitle(e.target.value)} placeholder="What did you work on?" required maxLength={100}/></label><label>Project<select value={newProject} onChange={e=>setNewProject(e.target.value)}>{projects.map(p=><option key={p.name}>{p.name}</option>)}</select></label><label>Description<textarea value={newDescription} onChange={e=>setNewDescription(e.target.value)} placeholder="What did you build, learn, or fix?" rows={4}/></label><div className="modal-actions"><button type="button" className="dark-button" onClick={()=>setShowCreate(false)}>Cancel</button><button className="gold-button" type="submit"><Plus size={15}/> Add devlog</button></div></form></div>}
-      {toast && <div className="toast"><Check size={16}/>{toast}<button onClick={()=>setToast("")} aria-label="Dismiss"><X size={14}/></button></div>}
+      {showCreate && 
+      <div className="modal-backdrop" onMouseDown={e => {if(e.target===e.currentTarget)setShowCreate(false)}}>
+        <form className="create-modal" onSubmit={createLog}><div className="modal-head">
+          <div>
+          <span className="eyebrow">CAPTURE YOUR PROGRESS</span><h2>New devlog</h2></div>
+          <button type="button" className="tiny-icon" onClick={() => setShowCreate(false)} aria-label="Close">
+            <X size={18}/>
+            </button>
+            </div><label>Title
+              <input autoFocus value={newTitle} onChange={e=>setNewTitle(e.target.value)} placeholder="What did you work on?" required maxLength={100}/></label><label>Project<select value={newProject} onChange={e=>setNewProject(e.target.value)}>{projects.map(p=><option key={p.name}>{p.name}</option>)}</select></label>
+        <label>Description
+          <textarea value={newDescription} onChange={e=>setNewDescription(e.target.value)} placeholder="What did you build, learn, or fix?" rows={4}/>
+        </label>
+              <div className="devlog-tag-selector">
+        <div className="devlog-tag-heading">
+          <span>Tags</span>
+          <small>
+            {selectedTagIds.length
+              ? `${selectedTagIds.length} selected`
+              : "Choose any that apply"}
+          </small>
+        </div>
+
+        {tags.length ? (
+          <div className="devlog-tag-options">
+            {tags.map((tag) => {
+              const selected = selectedTagIds.includes(tag.id);
+
+              return (
+                <button
+                  type="button"
+                  key={tag.id}
+                  className={`devlog-tag-option ${selected ? "selected" : ""}`}
+                  style={{ "--tag-color": tag.color } as React.CSSProperties}
+                  aria-pressed={selected}
+                  onClick={() => {
+                    setSelectedTagIds((current) =>
+                      selected
+                        ? current.filter((id) => id !== tag.id)
+                        : [...current, tag.id]
+                    );
+                  }}
+                >
+                  <span className="devlog-tag-dot" />
+                  {tag.name}
+                  {selected && <Check size={13} />}
+                </button>
+              );
+            })}
+          </div>
+        ) : (
+          <p className="devlog-tag-empty">
+            No tags yet. Create some in the Tags page first.
+          </p>
+        )}
+      </div>
+        <div className="modal-actions">
+          <button type="button" className="dark-button" onClick={()=>setShowCreate(false)}>Cancel</button>
+          <button className="gold-button" type="submit"><Plus size={15}/> Add devlog</button>
+        </div>
+      </form>
+      </div>}
+      {
+        toast && 
+        <div className="toast">
+          <Check size={16}/>{toast}
+            <button onClick={()=>setToast("")} aria-label="Dismiss"><X size={14}/>
+            </button>
+          </div>}
       <button className="floating-create" onClick={() => setShowCreate(true)} aria-label="Create devlog"><Plus size={22}/></button>
     </div>
   );
@@ -933,6 +1064,447 @@ function MediaPage({
           </div>
         </div>
       )}
+    </section>
+  );
+}
+
+
+
+function ActivityPage({
+  activity,
+  onCreate,
+}: {
+  activity: ActivityEntry[];
+  onCreate: () => void;
+}) {
+  const [filter, setFilter] = useState("All");
+  const [query, setQuery] = useState("");
+
+  const filteredActivity = useMemo(() => {
+    return [...activity]
+      .filter((entry) => {
+        const matchesFilter = filter === "All" || entry.action === filter.toLowerCase();
+        const matchesSearch =
+          !query ||
+          `${entry.title} ${entry.project} ${entry.action}`
+            .toLowerCase()
+            .includes(query.toLowerCase());
+
+        return matchesFilter && matchesSearch;
+      })
+      .sort((a, b) => b.timestamp - a.timestamp);
+  }, [activity, filter, query]);
+
+  function actionLabel(action: ActivityEntry["action"]) {
+    if (action === "created") return "Created devlog";
+    if (action === "edited") return "Edited devlog";
+    return "Deleted devlog";
+  }
+
+  function actionIcon(action: ActivityEntry["action"]) {
+    if (action === "created") return <Plus size={17} />;
+    if (action === "edited") return <Pencil size={17} />;
+    return <Trash2 size={17} />;
+  }
+
+  return (
+    <section className="activity-page">
+      <div className="activity-page-heading">
+        <div>
+          <span className="eyebrow">YOUR WORKSPACE HISTORY</span>
+          <h1>Activity<span>.</span></h1>
+          <p>A record of the changes you make to your devlogs.</p>
+        </div>
+
+        <button className="gold-button" onClick={onCreate}>
+          <Plus size={16} /> New Devlog
+        </button>
+      </div>
+
+      <div className="activity-page-summary">
+        <div>
+          <Activity size={19} />
+          <span><strong>{activity.length}</strong> recorded actions</span>
+        </div>
+        <span>Newest first</span>
+      </div>
+
+      <div className="activity-page-toolbar">
+        <div className="activity-page-filters">
+          {["All", "Created", "Edited", "Deleted"].map((name) => (
+            <button
+              key={name}
+              className={filter === name ? "filter-chip chip-active" : "filter-chip"}
+              onClick={() => setFilter(name)}
+            >
+              {name}
+            </button>
+          ))}
+        </div>
+
+        <label className="activity-page-search">
+          <Search size={15} />
+          <input
+            value={query}
+            onChange={(event) => setQuery(event.target.value)}
+            placeholder="Search activity..."
+          />
+          {query && (
+            <button onClick={() => setQuery("")} aria-label="Clear search">
+              <X size={14} />
+            </button>
+          )}
+        </label>
+      </div>
+
+      {filteredActivity.length ? (
+        <div className="activity-feed">
+          {filteredActivity.map((entry) => {
+            const date = new Date(entry.timestamp);
+
+            return (
+              <article className="activity-feed-entry" key={entry.id}>
+                <div className={`activity-feed-icon activity-feed-${entry.action}`}>
+                  {actionIcon(entry.action)}
+                </div>
+
+                <div className="activity-feed-content">
+                  <div className="activity-feed-top">
+                    <strong>{actionLabel(entry.action)}</strong>
+                    <time title={date.toLocaleString()}>
+                      {date.toLocaleDateString("en-US", {
+                        month: "short",
+                        day: "numeric",
+                        year: "numeric",
+                      })}{" "}
+                      ·{" "}
+                      {date.toLocaleTimeString("en-US", {
+                        hour: "numeric",
+                        minute: "2-digit",
+                      })}
+                    </time>
+                  </div>
+
+                  <h3>{entry.title}</h3>
+
+                  <div className="activity-feed-meta">
+                    <span className="activity-feed-project">
+                      {entry.project}
+                    </span>
+                    <span>Devlog</span>
+                  </div>
+                </div>
+              </article>
+            );
+          })}
+        </div>
+      ) : (
+        <div className="timeline-empty">
+          <Activity size={28} />
+          <h2>{activity.length ? "No matching activity" : "Nothing recorded yet"}</h2>
+          <p>
+            {activity.length
+              ? "Try another filter or search term."
+              : "Create your first devlog and its creation will appear here."}
+          </p>
+          {activity.length ? (
+            <button
+              className="dark-button"
+              onClick={() => {
+                setFilter("All");
+                setQuery("");
+              }}
+            >
+              Clear filters
+            </button>
+          ) : (
+            <button className="gold-button" onClick={onCreate}>
+              <Plus size={15} /> Create devlog
+            </button>
+          )}
+        </div>
+      )}
+    </section>
+  );
+}
+
+
+
+function TagsPage({
+  tags,
+  setTags,
+}: {
+  tags: DevTag[];
+  setTags: React.Dispatch<React.SetStateAction<DevTag[]>>;
+}) {
+  const [query, setQuery] = useState("");
+  const [newName, setNewName] = useState("");
+  const [newColor, setNewColor] = useState("#e8b85a");
+  const [editingId, setEditingId] = useState<number | null>(null);
+  const [editingName, setEditingName] = useState("");
+  const [editingColor, setEditingColor] = useState("#e8b85a");
+  const [error, setError] = useState("");
+
+  const filteredTags = useMemo(
+    () =>
+      tags.filter((tag) =>
+        tag.name.toLowerCase().includes(query.trim().toLowerCase())
+      ),
+    [tags, query]
+  );
+
+  function addTag(event: React.FormEvent) {
+    event.preventDefault();
+    const name = newName.trim();
+
+    if (!name) return;
+
+    if (tags.some((tag) => tag.name.toLowerCase() === name.toLowerCase())) {
+      setError("A tag with this name already exists.");
+      return;
+    }
+
+    setTags((current) => [
+      ...current,
+      { id: Date.now(), name, color: newColor },
+    ]);
+    setNewName("");
+    setError("");
+  }
+
+  function startEditing(tag: DevTag) {
+    setEditingId(tag.id);
+    setEditingName(tag.name);
+    setEditingColor(tag.color);
+    setError("");
+  }
+
+  function saveEdit(event: React.FormEvent) {
+    event.preventDefault();
+    const name = editingName.trim();
+
+    if (!name || editingId === null) return;
+
+    if (
+      tags.some(
+        (tag) =>
+          tag.id !== editingId &&
+          tag.name.toLowerCase() === name.toLowerCase()
+      )
+    ) {
+      setError("A tag with this name already exists.");
+      return;
+    }
+
+    setTags((current) =>
+      current.map((tag) =>
+        tag.id === editingId
+          ? { ...tag, name, color: editingColor }
+          : tag
+      )
+    );
+
+    setEditingId(null);
+    setError("");
+  }
+
+  function deleteTag(tag: DevTag) {
+    if (!window.confirm(`Delete the "${tag.name}" tag?`)) return;
+
+    setTags((current) => current.filter((item) => item.id !== tag.id));
+
+    if (editingId === tag.id) setEditingId(null);
+    setError("");
+  }
+
+  return (
+    <section className="tags-page">
+      <div className="tags-page-heading">
+        <div>
+          <span className="eyebrow">ORGANIZE YOUR WORK</span>
+          <h1>Tags<span>.</span></h1>
+          <p>Create and manage labels for organizing your development logs.</p>
+        </div>
+        <div className="tags-total">
+          <Tag size={19} />
+          <strong>{tags.length}</strong>
+          <span>{tags.length === 1 ? "tag" : "tags"}</span>
+        </div>
+      </div>
+
+      <form className="tags-create-form" onSubmit={addTag}>
+        <div className="tags-form-heading">
+          <h2>Create a tag</h2>
+          <p>Choose a memorable name and color.</p>
+        </div>
+
+        <div className="tags-form-controls">
+          <label className="tags-name-field">
+            <span>Tag name</span>
+            <input
+              value={newName}
+              onChange={(event) => {
+                setNewName(event.target.value);
+                setError("");
+              }}
+              placeholder="e.g. Lighting"
+              maxLength={40}
+              required
+            />
+          </label>
+
+          <label className="tags-color-field">
+            <span>Color</span>
+            <input
+              type="color"
+              value={newColor}
+              onChange={(event) => setNewColor(event.target.value)}
+              aria-label="New tag color"
+            />
+          </label>
+
+          <button className="gold-button" type="submit">
+            <Plus size={15} /> Create tag
+          </button>
+        </div>
+
+        {error && <p className="tags-error">{error}</p>}
+      </form>
+
+      <div className="tags-list-heading">
+        <div>
+          <h2>Your tags</h2>
+          <p className="section-subtitle">
+            Manage names and colors whenever you need to.
+          </p>
+        </div>
+
+        <label className="tags-search">
+          <Search size={15} />
+          <input
+            value={query}
+            onChange={(event) => setQuery(event.target.value)}
+            placeholder="Search tags..."
+          />
+          {query && (
+            <button
+              type="button"
+              onClick={() => setQuery("")}
+              aria-label="Clear search"
+            >
+              <X size={14} />
+            </button>
+          )}
+        </label>
+      </div>
+
+      {filteredTags.length ? (
+        <div className="tags-grid">
+          {filteredTags.map((tag) => (
+            <article className="tag-management-card" key={tag.id}>
+              {editingId === tag.id ? (
+                <form className="tag-edit-form" onSubmit={saveEdit}>
+                  <label>
+                    <span>Name</span>
+                    <input
+                      value={editingName}
+                      onChange={(event) => {
+                        setEditingName(event.target.value);
+                        setError("");
+                      }}
+                      maxLength={40}
+                      required
+                      autoFocus
+                    />
+                  </label>
+
+                  <label className="tag-edit-color">
+                    <span>Color</span>
+                    <input
+                      type="color"
+                      value={editingColor}
+                      onChange={(event) => setEditingColor(event.target.value)}
+                    />
+                  </label>
+
+                  <div className="tag-edit-actions">
+                    <button type="submit" className="gold-button">
+                      <Check size={14} /> Save
+                    </button>
+                    <button
+                      type="button"
+                      className="dark-button"
+                      onClick={() => {
+                        setEditingId(null);
+                        setError("");
+                      }}
+                    >
+                      Cancel
+                    </button>
+                  </div>
+                </form>
+              ) : (
+                <>
+                  <div className="tag-card-top">
+                    <span
+                      className="tag-color-dot"
+                      style={{ backgroundColor: tag.color }}
+                    />
+                    <span
+                      className="tag-preview"
+                      style={{
+                        color: tag.color,
+                        borderColor: `${tag.color}55`,
+                        backgroundColor: `${tag.color}12`,
+                      }}
+                    >
+                      {tag.name}
+                    </span>
+                    <button
+                      className="tiny-icon"
+                      onClick={() => startEditing(tag)}
+                      aria-label={`Edit ${tag.name}`}
+                      title="Edit tag"
+                    >
+                      <Pencil size={15} />
+                    </button>
+                    <button
+                      className="tiny-icon tag-delete-button"
+                      onClick={() => deleteTag(tag)}
+                      aria-label={`Delete ${tag.name}`}
+                      title="Delete tag"
+                    >
+                      <Trash2 size={15} />
+                    </button>
+                  </div>
+
+                  <div className="tag-card-bottom">
+                    <span>Devlogs using this tag</span>
+                    <strong>0</strong>
+                  </div>
+                </>
+              )}
+            </article>
+          ))}
+        </div>
+      ) : (
+        <div className="timeline-empty">
+          <Tag size={28} />
+          <h2>{tags.length ? "No matching tags" : "No tags yet"}</h2>
+          <p>
+            {tags.length
+              ? "Try another search term."
+              : "Create a tag above to start organizing your devlogs."}
+          </p>
+          {query && (
+            <button className="dark-button" onClick={() => setQuery("")}>
+              Clear search
+            </button>
+          )}
+        </div>
+      )}
+
+      {error && <p className="tags-error tags-global-error">{error}</p>}
     </section>
   );
 }
