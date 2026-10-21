@@ -24,6 +24,7 @@ const projectDetails = (value: unknown): Partial<Project> => {
     startDate: text(row.start_date) || undefined,
     completedDate: text(row.completed_date) || undefined,
     coverMediaId: row.cover_media_id == null ? undefined : number(row.cover_media_id),
+    pinned: row.pinned === true,
   };
 };
 const projectDetailPayload = (project: Partial<Project>): Row => {
@@ -43,6 +44,7 @@ const projectDetailPayload = (project: Partial<Project>): Row => {
   if (project.startDate !== undefined) details.start_date = project.startDate;
   if (project.completedDate !== undefined) details.completed_date = project.completedDate;
   if (project.coverMediaId !== undefined) details.cover_media_id = project.coverMediaId;
+  if (project.pinned !== undefined) details.pinned = project.pinned;
   return details;
 };
 
@@ -223,8 +225,13 @@ export class SupabasePortfolioRepository implements PortfolioRepository {
     const { data, error } = await this.client.from("projects").insert({ category_id: input.categoryId, name: input.name, slug: input.slug, description: input.description, summary: input.summary, full_description: input.fullDescription, role: input.role, development_status: input.developmentStatus, release_period: input.releasePeriod, cover_image: input.coverImage, cover_image_position: input.coverImagePosition, details: projectDetailPayload(input), status: input.status, published_at: input.status === "published" ? new Date().toISOString() : null }).select("*").single();
     if (error) throw error;
     const id = number(data.id);
-    await this.replaceAssociations("project_tags", "project_id", id, input.tagIds);
-    return { ...input, id, createdAt: Date.parse(text(data.created_at)) };
+    try { await this.replaceAssociations("project_tags", "project_id", id, input.tagIds); }
+    catch (associationError) {
+      const cleanup = await this.client.from("projects").delete().eq("id", id);
+      if (cleanup.error) throw new Error(`${associationError instanceof Error ? associationError.message : "Project tags could not be saved."} (project cleanup failed: ${cleanup.error.message})`, { cause: associationError });
+      throw associationError;
+    }
+    return { ...input, ...projectDetails(data.details), id, createdAt: Date.parse(text(data.created_at)) };
   }
 
   async updateProject(id: number, changes: Partial<Omit<Project, "id">>) {
@@ -253,12 +260,28 @@ export class SupabasePortfolioRepository implements PortfolioRepository {
     const { data, error } = projectResult;
     if (error) throw error;
     if (changes.tagIds) await this.replaceAssociations("project_tags", "project_id", id, changes.tagIds);
-    return { ...changes, ...projectDetails(data.details), id, slug: text(data.slug) || undefined, categoryId: number(data.category_id), name: text(data.name), description: text(data.description), coverImage: text(data.cover_image) || undefined, coverImagePosition: text(data.cover_image_position) || undefined, summary: text(data.summary) || undefined, fullDescription: text(data.full_description) || undefined, role: text(data.role) || undefined, developmentStatus: data.development_status as Project["developmentStatus"], releasePeriod: text(data.release_period) || undefined, createdAt: Date.parse(text(data.created_at)), status: status(data.status), tagIds: changes.tagIds ?? [] };
+    const { data: tags, error: tagsError } = await this.client.from("project_tags").select("tag_id").eq("project_id", id);
+    if (tagsError) throw tagsError;
+      return { ...changes, ...projectDetails(data.details), id, slug: text(data.slug) || undefined, categoryId: number(data.category_id), name: text(data.name), description: text(data.description), coverImage: text(data.cover_image) || undefined, coverImagePosition: text(data.cover_image_position) || undefined, summary: text(data.summary) || undefined, fullDescription: text(data.full_description) || undefined, role: text(data.role) || undefined, developmentStatus: data.development_status as Project["developmentStatus"], releasePeriod: text(data.release_period) || undefined, createdAt: Date.parse(text(data.created_at)), status: status(data.status), tagIds: (tags ?? []).map((row) => number(row.tag_id)) };
   }
 
   async deleteProject(id: number) {
+    const { data: project, error: projectError } = await this.client.from("projects").select("status").eq("id", id).single();
+    if (projectError) throw projectError;
+    let mediaToRestore: { id: number; published_at: string | null }[] = [];
+    if (project.status !== "published") {
+      const { data, error: selectMediaError } = await this.client.from("media").select("id,published_at").eq("project_id", id).eq("status", "published");
+      if (selectMediaError) throw selectMediaError;
+      mediaToRestore = (data ?? []).map((row) => ({ id: number(row.id), published_at: row.published_at == null ? null : text(row.published_at) }));
+      const { error: mediaError } = await this.client.from("media").update({ status: "draft", published_at: null }).eq("project_id", id).eq("status", "published");
+      if (mediaError) throw mediaError;
+    }
     const { error } = await this.client.from("projects").delete().eq("id", id);
-    if (error) throw error;
+    if (error) {
+      const restoration = await Promise.all(mediaToRestore.map((item) => this.client.from("media").update({ status: "published", published_at: item.published_at }).eq("id", item.id)));
+      const restoreError = restoration.find((result) => result.error)?.error;
+      throw new Error(restoreError ? `${error.message} (linked media visibility restore failed: ${restoreError.message})` : error.message);
+    }
   }
 
   async createDevlog(input: Omit<Devlog, "id">) {
@@ -324,14 +347,25 @@ export class SupabasePortfolioRepository implements PortfolioRepository {
   }
 
   async createMedia(file: File, input: { name: string; projectId?: number; devlogId?: number; status: "draft" | "published" }) {
+    if (!file.type.startsWith("image/") && !file.type.startsWith("video/")) throw new Error("Choose an image or video file.");
+    if (file.size > 50 * 1024 * 1024) throw new Error("Files must be 50 MB or smaller.");
     const safeName = file.name.replace(/[^a-zA-Z0-9._-]/g, "_");
     const storagePath = `${crypto.randomUUID()}-${safeName}`;
     const { error: uploadError } = await this.client.storage.from("beelog-media").upload(storagePath, file, { contentType: file.type || "application/octet-stream", upsert: false });
     if (uploadError) throw uploadError;
     const { data, error } = await this.client.from("media").insert({ name: input.name, project_id: input.projectId ?? null, devlog_id: input.devlogId ?? null, storage_path: storagePath, media_type: file.type.startsWith("video/") ? "video" : "image", alt_text: input.name, status: input.status, published_at: input.status === "published" ? new Date().toISOString() : null }).select("*").single();
-    if (error) { await this.client.storage.from("beelog-media").remove([storagePath]); throw error; }
+    if (error) {
+      const cleanup = await this.client.storage.from("beelog-media").remove([storagePath]);
+      if (cleanup.error) throw new Error(`${error.message}. The uploaded file also needs Storage cleanup: ${cleanup.error.message}`);
+      throw error;
+    }
     const { data: signed, error: signedError } = await this.client.storage.from("beelog-media").createSignedUrl(storagePath, 3600);
-    if (signedError) throw signedError;
+    if (signedError) {
+      const metadataCleanup = await this.client.from("media").delete().eq("id", data.id);
+      const storageCleanup = await this.client.storage.from("beelog-media").remove([storagePath]);
+      const cleanupErrors = [metadataCleanup.error?.message, storageCleanup.error?.message].filter(Boolean);
+      throw new Error(`${signedError.message}${cleanupErrors.length ? ` (cleanup also failed: ${cleanupErrors.join("; ")})` : ""}`);
+    }
     return { id: number(data.id), name: text(data.name), src: signed.signedUrl, projectId: data.project_id == null ? undefined : number(data.project_id), devlogId: data.devlog_id == null ? undefined : number(data.devlog_id), type: data.media_type === "video" ? "video" as const : "image" as const, status: status(data.status), altText: text(data.alt_text), caption: text(data.caption), createdAt: text(data.created_at) };
   }
 
@@ -352,12 +386,23 @@ export class SupabasePortfolioRepository implements PortfolioRepository {
   }
 
   async deleteMedia(id: number) {
-    const { data, error: selectError } = await this.client.from("media").select("storage_path").eq("id", id).single();
+    const { data, error: selectError } = await this.client.from("media").select("*").eq("id", id).single();
     if (selectError) throw selectError;
+    const [projectRefs, devlogRefs, workRefs, homepageRefs] = await Promise.all([
+      this.client.from("projects").select("id").contains("details", { cover_media_id: id }).limit(1),
+      this.client.from("devlogs").select("id").contains("media_ids", [id]).limit(1),
+      this.client.from("project_work_items").select("id").contains("media_ids", [id]).limit(1),
+      this.client.from("homepage_content").select("id").contains("content", { hero: { imageMediaId: id } }).limit(1),
+    ]);
+    const referenceErrors = [projectRefs.error, devlogRefs.error, workRefs.error, homepageRefs.error].filter(Boolean);
+    if (referenceErrors.length) throw new Error(`Could not verify image references before deletion: ${referenceErrors.map((error) => error?.message).join("; ")}`);
+    if (projectRefs.data?.length || devlogRefs.data?.length || workRefs.data?.length || homepageRefs.data?.length) {
+      throw new Error("This file is still used by a project, devlog, project contribution, or homepage. Remove those references before deleting it.");
+    }
     const { error } = await this.client.from("media").delete().eq("id", id);
     if (error) throw error;
     const { error: storageError } = await this.client.storage.from("beelog-media").remove([text(data.storage_path)]);
-    if (storageError) throw storageError;
+    if (storageError) throw new Error(`Media metadata was deleted, but the private Storage object could not be removed: ${storageError.message}`);
   }
 
   private async replaceAssociations(table: "project_tags" | "devlog_tags", ownerColumn: "project_id" | "devlog_id", ownerId: number, tagIds: number[]) {

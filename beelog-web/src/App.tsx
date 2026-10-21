@@ -1,10 +1,10 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   Activity, ArrowRight, ArrowUpRight, CalendarDays, Check,
   ChevronLeft, ChevronRight, Code2, Folder, FolderOpen,
   Image as ImageIcon, MessageCircle, MoreHorizontal, Play,
   Plus, Search, Tag, Video, X, Flame,
-  Filter, Pencil, Trash2, FileText, CircleHelp, House
+  Filter, Pencil, Trash2, FileText, CircleHelp, House, Pin
 } from "lucide-react";
 import "./index.css";
 import type { ActivityEntry, DevTag, Devlog, HomepageContent, MediaRecord, Project, ProjectCategory, ProjectWorkCategory, ProjectWorkItem } from "./domain/models";
@@ -23,6 +23,31 @@ function summarizeChanges(before: Record<string, unknown>, changes: Record<strin
 }
 function projectCoverUrl(project: Project, media: MediaRecord[], fallback: string) {
   return (project.coverMediaId ? media.find((item) => item.id === project.coverMediaId)?.src : undefined) || project.coverImage || fallback;
+}
+function previewText(value: string, limit = 90) {
+  const text = value.trim();
+  return text.length > limit ? `${text.slice(0, limit - 1).trimEnd()}…` : text;
+}
+
+function LocalFilePreview({ file, className, alt }: { file: File; className: string; alt: string }) {
+  const container = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const url = URL.createObjectURL(file);
+    const preview = container.current?.querySelector("img, video");
+    if (preview instanceof HTMLImageElement || preview instanceof HTMLVideoElement) preview.src = url;
+    return () => URL.revokeObjectURL(url);
+  }, [file]);
+  return <div ref={container} className={className}>{file.type.startsWith("video/") ? <video controls/> : <img alt={alt}/>}</div>;
+}
+
+function CoverImagePicker({ media, selectedId, onSelect, label = "Project hero image from Media" }: { media: MediaRecord[]; selectedId: number | null; onSelect: (id: number | null) => void; label?: string }) {
+  const images = media.filter((item) => item.type === "image").slice().sort((a, b) => (Date.parse(b.createdAt ?? "") || 0) - (Date.parse(a.createdAt ?? "") || 0));
+  return <div className="cover-image-picker">
+    <div className="devlog-tag-heading"><span>{label}</span><small>{selectedId ? "1 selected" : "Optional"}</small></div>
+    {images.length ? <div className="cover-image-options">{images.map((item) => <button type="button" key={item.id} className={`cover-image-option ${selectedId === item.id ? "selected" : ""}`} aria-pressed={selectedId === item.id} onClick={() => onSelect(selectedId === item.id ? null : item.id)} title={item.name}>
+      <img src={item.src} alt=""/><span>{item.name}</span>{selectedId === item.id && <Check size={14}/>}
+    </button>)}</div> : <p className="devlog-tag-empty">No eligible images in Media yet.</p>}
+  </div>;
 }
 
 function App() {
@@ -53,6 +78,9 @@ function App() {
   const [newProjectName, setNewProjectName] = useState("");
   const [newProjectCategory, setNewProjectCategory] = useState("2");
   const [newProjectDescription, setNewProjectDescription] = useState("");
+  const [newProjectImage, setNewProjectImage] = useState<File | null>(null);
+  const [newProjectCoverMediaId, setNewProjectCoverMediaId] = useState<number | null>(null);
+  const [projectSaving, setProjectSaving] = useState(false);
   const [newProjectStatus, setNewProjectStatus] = useState<"draft" | "published">("published");
   const [selectedProjectTagIds, setSelectedProjectTagIds] = useState<number[]>([]);
   const [showCreateCategory, setShowCreateCategory] = useState(false);
@@ -67,6 +95,7 @@ function App() {
   const [newProjectId, setNewProjectId] = useState<number | null>(null);
   const [newLogStatus, setNewLogStatus] = useState<"draft" | "published">("published");
   const [selectedTagIds, setSelectedTagIds] = useState<number[]>([]);
+  const [selectedDevlogMediaIds, setSelectedDevlogMediaIds] = useState<number[]>([]);
   const [newDescription, setNewDescription] = useState("");
   const [newActivityType, setNewActivityType] = useState("Asset creation");
   const [toast, setToast] = useState("");
@@ -77,6 +106,9 @@ function App() {
   const publishedMedia = media.filter((item) => item.status === "published");
   const publicCategories = isAdmin ? categories : categories.filter((category) => publicProjects.some((project) => project.categoryId === category.id));
   const publicMedia = isAdmin ? media : media.filter((item) => item.status === "published");
+  const availableDevlogImages = media
+    .filter((item) => item.type === "image" && !item.devlogId && (newLogStatus === "draft" || item.status === "published"))
+    .sort((a, b) => (Date.parse(b.createdAt ?? "") || 0) - (Date.parse(a.createdAt ?? "") || 0));
   const safeActiveProject = activeProject === "All" || publicCategories.some((item) => item.name === activeProject) || publicProjects.some((item) => item.name === activeProject) ? activeProject : "All";
   const safeDevlogFilters = useMemo<DevlogFilters>(() => ({
     ...devlogFilters,
@@ -125,14 +157,25 @@ function App() {
     setActivity((current) => [{ id: Date.now(), action, entity, title, project, details, timestamp: Date.now() }, ...current]);
   }
 
+  async function deleteProjectRecord(project: Project) {
+    await repository.deleteProject(project.id);
+    setProjects((current) => current.filter((item) => item.id !== project.id));
+    setLogs((current) => current.map((log) => log.projectId === project.id ? { ...log, projectId: undefined, project: "Unassigned" } : log));
+    setMedia((current) => current.map((item) => item.projectId === project.id ? { ...item, projectId: undefined, ...(project.status !== "published" && item.status === "published" ? { status: "draft" as const } : {}) } : item));
+    setWorkItems((current) => current.filter((item) => item.projectId !== project.id));
+    recordActivity("deleted", "Project", project.name, categories.find((item) => item.id === project.categoryId)?.name, "Project deleted; related devlogs and media were retained without the project link");
+    setActiveProject("All");
+    closeProjectRoute();
+  }
+
   const projectDetailRepository: PortfolioRepository = {
     ...repository,
-    async createWorkCategory(input) { const item = await repository.createWorkCategory(input); recordActivity("created", "Project", item.name, "Development work", "Created a contribution category"); return item; },
-    async updateWorkCategory(id, changes) { const before = workCategories.find((item) => item.id === id); const item = await repository.updateWorkCategory(id, changes); recordActivity("edited", "Project", item.name, "Development work", before ? summarizeChanges(before as unknown as Record<string, unknown>, changes as Record<string, unknown>) : "Updated contribution category"); return item; },
-    async deleteWorkCategory(id) { const before = workCategories.find((item) => item.id === id); await repository.deleteWorkCategory(id); if (before) recordActivity("deleted", "Project", before.name, "Development work", "Deleted a contribution category"); },
-    async createWorkItem(input) { const item = await repository.createWorkItem(input); const parent = projects.find((project) => project.id === item.projectId); recordActivity("created", "Project", item.title, parent?.name ?? "Project", `Added contribution (${item.publicationStatus})`); return item; },
-    async updateWorkItem(id, changes) { const before = workItems.find((item) => item.id === id); const item = await repository.updateWorkItem(id, changes); const parent = projects.find((project) => project.id === item.projectId); recordActivity("edited", "Project", item.title, parent?.name ?? "Project", before ? summarizeChanges(before as unknown as Record<string, unknown>, changes as Record<string, unknown>) : "Updated contribution"); return item; },
-    async deleteWorkItem(id) { const before = workItems.find((item) => item.id === id); await repository.deleteWorkItem(id); if (before) recordActivity("deleted", "Project", before.title, projects.find((project) => project.id === before.projectId)?.name ?? "Project", "Deleted a development contribution"); },
+    async createWorkCategory(input) { const item = await repository.createWorkCategory(input); setWorkCategories((current) => [...current, item]); recordActivity("created", "Project", item.name, "Development work", "Created a contribution category"); return item; },
+    async updateWorkCategory(id, changes) { const before = workCategories.find((item) => item.id === id); const item = await repository.updateWorkCategory(id, changes); setWorkCategories((current) => current.map((row) => row.id === id ? item : row)); recordActivity("edited", "Project", item.name, "Development work", before ? summarizeChanges(before as unknown as Record<string, unknown>, changes as Record<string, unknown>) : "Updated contribution category"); return item; },
+    async deleteWorkCategory(id) { const before = workCategories.find((item) => item.id === id); await repository.deleteWorkCategory(id); setWorkCategories((current) => current.filter((item) => item.id !== id)); if (before) recordActivity("deleted", "Project", before.name, "Development work", "Deleted a contribution category"); },
+    async createWorkItem(input) { const item = await repository.createWorkItem(input); setWorkItems((current) => [...current, item]); const parent = projects.find((project) => project.id === item.projectId); recordActivity("created", "Project", item.title, parent?.name ?? "Project", `Added contribution (${item.publicationStatus})`); return item; },
+    async updateWorkItem(id, changes) { const before = workItems.find((item) => item.id === id); const item = await repository.updateWorkItem(id, changes); setWorkItems((current) => current.map((row) => row.id === id ? item : row)); const parent = projects.find((project) => project.id === item.projectId); recordActivity("edited", "Project", item.title, parent?.name ?? "Project", before ? summarizeChanges(before as unknown as Record<string, unknown>, changes as Record<string, unknown>) : "Updated contribution"); return item; },
+    async deleteWorkItem(id) { const before = workItems.find((item) => item.id === id); await repository.deleteWorkItem(id); setWorkItems((current) => current.filter((item) => item.id !== id)); if (before) recordActivity("deleted", "Project", before.title, projects.find((project) => project.id === before.projectId)?.name ?? "Project", "Deleted a development contribution"); },
   };
 
   async function createCategory(e: React.FormEvent) {
@@ -150,7 +193,7 @@ function App() {
 
   async function createProject(e: React.FormEvent) {
     e.preventDefault();
-    const name = newProjectName.trim();
+    const name = newProjectName.trim().slice(0, 45);
     if (!name) return;
     if (projects.some((project) => project.name.toLowerCase() === name.toLowerCase())) {
       setToast("A project with that name already exists");
@@ -158,16 +201,38 @@ function App() {
     }
     const category = categories.find((item) => item.id === Number(newProjectCategory)) ?? categories[0];
     if (!category) { setToast("Create a project category first"); return; }
-    let project: Project;
-    try { project = await repository.createProject({
+    setProjectSaving(true);
+    let uploadedCover: MediaRecord | undefined;
+    let project: Project | undefined;
+    try {
+      if (newProjectImage) uploadedCover = await repository.createMedia(newProjectImage, { name: newProjectImage.name, status: "draft" });
+      project = await repository.createProject({
       name, slug: `${slugifyProject(name)}-${category.id}`, categoryId: category.id,
       description: newProjectDescription.trim(), createdAt: 0,
-      coverImage: "/ex-image-5.jpg", status: newProjectStatus,
+      coverImage: uploadedCover || newProjectCoverMediaId ? undefined : "/ex-image-5.jpg", coverMediaId: newProjectCoverMediaId, status: newProjectStatus,
       tagIds: [...selectedProjectTagIds],
-    }); } catch (error) { setToast(error instanceof Error ? error.message : "Could not create project"); return; }
+      });
+      if (uploadedCover) {
+        const linkedCover = await repository.updateMedia(uploadedCover.id, { projectId: project.id, status: newProjectStatus });
+        setMedia((current) => current.map((item) => item.id === linkedCover.id ? linkedCover : item));
+        project = await repository.updateProject(project.id, { coverMediaId: uploadedCover.id });
+      }
+    } catch (error) {
+      const cleanupErrors: string[] = [];
+      if (project) { try { await repository.deleteProject(project.id); } catch (cleanupError) { cleanupErrors.push(`project cleanup failed: ${cleanupError instanceof Error ? cleanupError.message : "unknown error"}`); } }
+      if (uploadedCover) { try { await repository.deleteMedia(uploadedCover.id); setMedia((current) => current.filter((item) => item.id !== uploadedCover!.id)); } catch (cleanupError) { cleanupErrors.push(`media cleanup failed: ${cleanupError instanceof Error ? cleanupError.message : "unknown error"}`); } }
+      const message = error instanceof Error ? error.message : "Could not create project";
+      setToast(cleanupErrors.length ? `${message} (${cleanupErrors.join("; ")})` : message);
+      setProjectSaving(false);
+      return;
+    }
+    if (!project) { setProjectSaving(false); return; }
+    setProjectSaving(false);
     setProjects((current) => [...current, project]);
     setNewProjectName("");
     setNewProjectDescription("");
+    setNewProjectImage(null);
+    setNewProjectCoverMediaId(null);
     setSelectedProjectTagIds([]);
     setNewProjectStatus("published");
     setShowCreateProject(false);
@@ -180,9 +245,9 @@ function App() {
     ...log,
     categoryId: log.categoryId ?? projects.find((project) => project.id === log.projectId)?.categoryId,
   })), { ...safeDevlogFilters, query: search }).filter(log => {
-    const projectMatch = safeActiveProject === "All" || log.project === safeActiveProject || publicCategories.find((category) => category.name === safeActiveProject)?.id === publicProjects.find((project) => project.id === log.projectId)?.categoryId;
+    const projectMatch = activeNav === "Timeline" || safeActiveProject === "All" || log.project === safeActiveProject || publicCategories.find((category) => category.name === safeActiveProject)?.id === publicProjects.find((project) => project.id === log.projectId)?.categoryId;
     return projectMatch;
-  }), [publicLogs, safeActiveProject, search, publicCategories, publicProjects, safeDevlogFilters, projects]);
+  }), [publicLogs, safeActiveProject, search, publicCategories, publicProjects, safeDevlogFilters, projects, activeNav]);
 
   const calendarMonths = useMemo(() => {
     // Show four consecutive months, ending with the selected month.
@@ -214,7 +279,9 @@ function App() {
   }, [month, publicActivityCounts]);
   const monthLabel = month.toLocaleDateString("en-US", { month: "short", year: "numeric" });
   const homeSection = (id: string) => visibleHomepage.sections.find((section) => section.id === id) ?? { id, title: "", visible: true, order: 0 };
-  const featuredHomeProjects = visibleHomepage.hero.featuredProjectIds.map((id) => publicProjects.find((project) => project.id === id)).filter((project): project is Project => Boolean(project));
+  const pinnedHomeProjects = publicProjects.filter((project) => project.pinned === true);
+  const featuredHomeProjects = visibleHomepage.hero.featuredProjectIds.map((id) => publicProjects.find((project) => project.id === id)).filter((project): project is Project => Boolean(project)).filter((project, index, all) => all.findIndex((item) => item.id === project.id) === index);
+  const homepageProjectShowcase = [...featuredHomeProjects, ...publicProjects.filter((project) => !featuredHomeProjects.some((featured) => featured.id === project.id))].slice(0, 9);
   const homeQuote = visibleHomepage.quotes.filter((quote) => quote.active).sort((a, b) => a.order - b.order)[0];
   
 
@@ -267,11 +334,12 @@ async function createLog(e: React.FormEvent) {
     description:
       newDescription.trim() ||
       "A new development log. Add more details when you're ready.",
-    image: "/ex-image-1.jpg",
-    images: 0,
+    image: media.find((item) => selectedDevlogMediaIds.includes(item.id))?.src ?? "/ex-image-1.jpg",
+    images: selectedDevlogMediaIds.length,
     comments: 0,
     time: "Just now",
     tagIds: [...selectedTagIds],
+    mediaIds: [...selectedDevlogMediaIds],
     status: newLogStatus,
     activityType: newActivityType,
   };
@@ -280,19 +348,24 @@ async function createLog(e: React.FormEvent) {
   catch (error) { setToast(error instanceof Error ? error.message : "Could not create devlog"); return; }
   setLogs((old) => [created, ...old]);
 
+  const linkedMedia = await Promise.allSettled(selectedDevlogMediaIds.map((id) => repository.updateMedia(id, { devlogId: created.id })));
+  const linkedMediaRecords = linkedMedia.flatMap((result) => result.status === "fulfilled" ? [result.value] : []);
+  if (linkedMediaRecords.length) setMedia((current) => current.map((mediaItem) => linkedMediaRecords.find((linked) => linked.id === mediaItem.id) ?? mediaItem));
+
   recordActivity("created", "Devlog", created.title, created.project, selectedTagIds.length ? `Tags: ${tags.filter((tag) => selectedTagIds.includes(tag.id)).map((tag) => tag.name).join(", ")}` : undefined);
 
   setNewTitle("");
   setNewDescription("");
   setNewActivityType("Asset creation");
   setSelectedTagIds([]);
+  setSelectedDevlogMediaIds([]);
   setNewLogStatus("published");
   setNewProjectId(null);
   setShowCreate(false);
   setActiveProject("All");
   setActiveNav("Home");
 
-  setToast("Devlog added to this dashboard");
+  setToast(linkedMediaRecords.length === selectedDevlogMediaIds.length ? "Devlog added to this dashboard" : "Devlog saved, but some image links could not be updated");
   window.setTimeout(() => setToast(""), 2600);
 }
 
@@ -347,12 +420,22 @@ async function deleteLog(log: Devlog) {
       <header className="topbar">
         <div className="topbar-crumb"><span>BeeLog</span><span className="crumb-slash">/</span><strong>{projectRoute ? routedProject?.name ?? "Project" : activeNav}</strong></div>
         <label className="global-search"><Search size={16}/><input id="global-search" value={search} onChange={e => setSearch(e.target.value)} placeholder="Search devlogs, projects, tags..."/><kbd>Ctrl K</kbd><button aria-label="Clear search" onClick={() => setSearch("")} className="clear-search">{search && <X size={13}/>}</button></label>
-        <div className="topbar-right">{isAdmin ? <button className="login-button" onClick={() => void logout()}>Log out</button> : <><button className="login-button" onClick={() => setShowLogin(true)}>Log In</button>{authStatus === "non-admin" && <button className="auth-signout-link" onClick={() => void logout()}>Sign out</button>}</>}</div>
+        <div className="topbar-right">{isAdmin ? <button className="login-button" onClick={() => void logout()}>Log out</button> : authStatus === "non-admin" ? <button className="login-button" onClick={() => void logout()}>Sign out</button> : <button className="login-button" onClick={() => setShowLogin(true)}>Log In</button>}</div>
       </header>
 
       <main className="main-content">
   {dataLoadError && <div className="toast" role="alert">{dataLoadError}<button onClick={() => setDataLoadError("")} aria-label="Dismiss"><X size={14}/></button></div>}
-  {projectRoute ? (routedProject ? <ProjectDetailPage project={routedProject} categories={isAdmin ? categories : publicCategories} category={publicCategories.find((item) => item.id === routedProject.categoryId)} logs={publicLogs.filter((log) => log.projectId === routedProject.id)} media={publicMedia.filter((item) => item.projectId === routedProject.id)} availableMedia={publicMedia} tags={tags} workCategories={workCategories} workItems={workItems.filter((item) => item.projectId === routedProject.id && (isAdmin || item.publicationStatus === "published"))} repository={projectDetailRepository} isAdmin={isAdmin} onBack={closeProjectRoute} onSave={async (changes) => { try { const updated = await repository.updateProject(routedProject.id, changes); setProjects((current) => current.map((item) => item.id === updated.id ? { ...item, ...updated } : item)); recordActivity("edited", "Project", updated.name, "Projects", summarizeChanges(routedProject as unknown as Record<string, unknown>, changes as Record<string, unknown>)); } catch (error) { setToast(error instanceof Error ? error.message : "Could not update project"); throw error; } }} /> : <div className="project-route-empty"><h1>Project not found</h1><button className="dark-button" onClick={closeProjectRoute}>Back to projects</button></div>) : activeNav === "Timeline" ? (
+  {projectRoute ? (routedProject ? <ProjectDetailPage
+    project={routedProject} categories={isAdmin ? categories : publicCategories}
+    category={publicCategories.find((item) => item.id === routedProject.categoryId)}
+    logs={publicLogs.filter((log) => log.projectId === routedProject.id)}
+    media={publicMedia.filter((item) => item.projectId === routedProject.id)} availableMedia={publicMedia}
+    tags={tags} workCategories={workCategories}
+    workItems={workItems.filter((item) => item.projectId === routedProject.id && (isAdmin || item.publicationStatus === "published"))}
+    repository={projectDetailRepository} isAdmin={isAdmin} onBack={closeProjectRoute}
+    onDeleteProject={() => deleteProjectRecord(routedProject)}
+    onSave={async (changes) => { try { const updated = await repository.updateProject(routedProject.id, changes); setProjects((current) => current.map((item) => item.id === updated.id ? { ...item, ...updated } : item)); recordActivity("edited", "Project", updated.name, "Projects", summarizeChanges(routedProject as unknown as Record<string, unknown>, changes as Record<string, unknown>)); } catch (error) { setToast(error instanceof Error ? error.message : "Could not update project"); throw error; } }}
+  /> : <div className="project-route-empty"><h1>Project not found</h1><button className="dark-button" onClick={closeProjectRoute}>Back to projects</button></div>) : activeNav === "Timeline" ? (
     <TimelinePage
       logs={timelineLogs}
       projects={categories}
@@ -378,7 +461,7 @@ async function deleteLog(log: Devlog) {
     ) : activeNav === "Media" ? (
 
   <MediaPage media={publicMedia} projects={publicProjects} devlogs={publicLogs} isAdmin={isAdmin}
-    onUpload={async (file, projectId, devlogId, status = "draft") => { try { const item = await repository.createMedia(file, { name: file.name, projectId, devlogId, status }); setMedia((current) => [item, ...current]); recordActivity("created", "Media", item.name, "Media", `Uploaded as ${status}`); } catch (error) { setToast(error instanceof Error ? error.message : "Could not upload media"); } }}
+    onUpload={async (file, projectId, devlogId, status = "draft") => { try { const item = await repository.createMedia(file, { name: file.name, projectId, devlogId, status }); setMedia((current) => [item, ...current]); recordActivity("created", "Media", item.name, "Media", `Uploaded as ${status}`); return item; } catch (error) { setToast(error instanceof Error ? error.message : "Could not upload media"); throw error; } }}
     onUpdate={async (id, changes) => { try { const previous = media.find((row) => row.id === id); const item = await repository.updateMedia(id, changes); setMedia((current) => current.map((row) => row.id === id ? item : row)); recordActivity("edited", "Media", item.name, "Media", previous ? summarizeChanges(previous as unknown as Record<string, unknown>, changes as Record<string, unknown>) : "Updated media metadata"); } catch (error) { setToast(error instanceof Error ? error.message : "Could not update media"); } }}
     onDelete={async (item) => { if (!window.confirm(`Delete media “${item.name}”?`)) return; try { await repository.deleteMedia(item.id); setMedia((current) => current.filter((row) => row.id !== item.id)); recordActivity("deleted", "Media", item.name, "Media"); } catch (error) { setToast(error instanceof Error ? error.message : "Could not delete media"); } }} />
     ) : activeNav === "Projects" ? (
@@ -402,6 +485,8 @@ async function deleteLog(log: Devlog) {
     onCreateProject={() => { if (isAdmin) setShowCreateProject(true); }}
     onRecordActivity={recordActivity}
     setProjects={setProjects}
+    setMedia={setMedia}
+    setWorkItems={setWorkItems}
   />
 
   ) : (
@@ -441,8 +526,8 @@ async function deleteLog(log: Devlog) {
 
             <div className="lower-grid" style={{ order: Math.min(homeSection("projects").order, homeSection("latest-media").order, homeSection("heatmap").order) }}>
               <section className="section-block projects-section" style={{ order: homeSection("projects").order, display: homeSection("projects").visible ? undefined : "none" }}><div className="section-title-row"><div><h2>{homeSection("projects").title || "Projects"}</h2><p className="section-subtitle">{homeSection("projects").description || "The worlds you're building."}</p></div><button className="text-link" onClick={() => setActiveNav("Projects")}>View all <ArrowRight size={14}/></button></div>
-                <div className="project-cards">{(featuredHomeProjects.length ? featuredHomeProjects : publicProjects).map((p,i) => { const category = categories.find((c) => c.id === p.categoryId); return <button className="project-card" key={p.name} onClick={() => openProject(p)}>
-                  <div className="project-cover"><img src={projectCoverUrl(p, publicMedia, ["/ex-image-2.jpg","/ex-image-5.jpg","/ex-image-1.jpg","/ex-image-4.jpg","/ex-image-3.jpg"][i % 5])} alt="" onError={e => {(e.currentTarget as HTMLImageElement).style.opacity="0"}}/><span className="project-cover-mark" style={{color:category?.color}}>{category?.name.trim().charAt(0).toUpperCase()}</span></div><div className="project-card-copy"><strong>{p.name}</strong><p>{p.summary || p.description || category?.name}</p><small><FileText size={12}/> {logs.filter(log => log.projectId === p.id).length} devlogs</small></div>
+                <div className="project-cards">{homepageProjectShowcase.map((p,i) => { const category = categories.find((c) => c.id === p.categoryId); return <button className="project-card" key={p.name} onClick={() => openProject(p)}>
+                  <div className="project-cover"><img src={projectCoverUrl(p, publicMedia, ["/ex-image-2.jpg","/ex-image-5.jpg","/ex-image-1.jpg","/ex-image-4.jpg","/ex-image-3.jpg"][i % 5])} alt="" onError={e => {(e.currentTarget as HTMLImageElement).style.opacity="0"}}/><span className="project-cover-mark" style={{color:category?.color}}>{category?.name.trim().charAt(0).toUpperCase()}</span></div><div className="project-card-copy"><strong>{p.name}</strong><p>{previewText(p.summary || p.description || category?.name || "")}</p><small><FileText size={12}/> {logs.filter(log => log.projectId === p.id).length} devlogs</small></div>
                 </button>;})}</div>
               </section>
 
@@ -490,7 +575,8 @@ async function deleteLog(log: Devlog) {
           <aside className="right-column">
             {homeQuote && <section className="quote-card" style={{backgroundImage:`linear-gradient(90deg,rgba(19,17,13,.88),rgba(19,17,13,.30)),url('${homepageHeroImage.replaceAll("'", "")}')`}}><span className="quote-mark">“</span><blockquote>{homeQuote.text}</blockquote><span className="quote-credit">— {homeQuote.author || "Bee"}</span><span className="quote-doodle">✿</span></section>}
             <section className="right-panel" style={{ display: homeSection("projects").visible ? undefined : "none" }}><div className="panel-heading"><h3>Pinned Projects</h3><button onClick={() => setActiveNav("Projects")} aria-label="View projects"><ArrowRight size={15}/></button></div>
-              {(featuredHomeProjects.length ? featuredHomeProjects : publicProjects).slice(0,3).map((p,i)=>{const category=categories.find((c)=>c.id===p.categoryId);const count=publicLogs.filter(log=>log.projectId===p.id).length;const total=Math.max(1,publicLogs.length);return <button className="pinned-project" key={p.name} onClick={() => openProject(p)}><span className={`pinned-logo pinned-${i}`} style={{color:category?.color}}>{category?.name.trim().charAt(0).toUpperCase()}</span><span className="pinned-info"><strong>{p.name}</strong><span className="pinned-progress"><i style={{width:`${Math.round((count/total)*100)}%`,background:category?.color}}/></span><small>{count} devlogs</small></span><ChevronRight size={15}/></button>;})}
+              {pinnedHomeProjects.slice(0,3).map((p,i)=>{const category=categories.find((c)=>c.id===p.categoryId);const count=publicLogs.filter(log=>log.projectId===p.id).length;const total=Math.max(1,publicLogs.length);return <button className="pinned-project" key={p.name} onClick={() => openProject(p)}><span className={`pinned-logo pinned-${i}`} style={{color:category?.color}}>{category?.name.trim().charAt(0).toUpperCase()}</span><span className="pinned-info"><strong>{p.name}</strong><span className="pinned-progress"><i style={{width:`${Math.round((count/total)*100)}%`,background:category?.color}}/></span><small>{count} devlogs</small></span><ChevronRight size={15}/></button>;})}
+              {pinnedHomeProjects.length === 0 && <p className="pinned-project-empty">No pinned projects yet.</p>}
             </section>
             <section className="right-panel activity-panel"><div className="panel-heading"><h3>{isAdmin ? "Recent Activity" : "Recent Devlogs"}</h3><button onClick={() => setActiveNav(isAdmin ? "Activity" : "Timeline")} aria-label={isAdmin ? "View activity" : "View timeline"}><ArrowRight size={15}/></button></div>
               {isAdmin ? [...activity].sort((a,b)=>b.timestamp-a.timestamp).slice(0,5).map((entry,i)=><button className="activity-item" key={entry.id} onClick={() => setActiveNav("Activity")}><span className={`activity-icon activity-${i%4}`}>{entry.action === "deleted" ? <Trash2 size={17}/> : entry.action === "edited" ? <Pencil size={17}/> : <Plus size={17}/>}</span><span className="activity-copy"><small>{entry.action} {entry.entity}</small><strong>{entry.title}</strong><time>{new Date(entry.timestamp).toLocaleDateString()}</time></span></button>) : [...publicLogs].slice(0,5).map((log,i)=><button className="activity-item" key={log.id} onClick={() => { setSearch(log.title); setActiveNav("Timeline"); }}><span className={`activity-icon activity-${i%4}`}>{i===0?<Code2 size={17}/>:i===1?<Activity size={17}/>:i===2?<MessageCircle size={17}/>:i===3?<Pencil size={17}/>:<FolderOpen size={17}/>}</span><span className="activity-copy"><small>{log.activityType || "Devlog"}</small><strong>{log.title}</strong><time>{log.date}</time></span></button>)}
@@ -504,7 +590,7 @@ async function deleteLog(log: Devlog) {
 
       {isAdmin && showCreate && 
       <div className="modal-backdrop" onMouseDown={e => {if(e.target===e.currentTarget)setShowCreate(false)}}>
-        <form className="create-modal" onSubmit={createLog}><div className="modal-head">
+        <form className="create-modal devlog-create-modal" onSubmit={createLog}><div className="modal-head">
           <div>
           <span className="eyebrow">CAPTURE YOUR PROGRESS</span><h2>New devlog</h2></div>
           <button type="button" className="tiny-icon" onClick={() => setShowCreate(false)} aria-label="Close">
@@ -514,10 +600,21 @@ async function deleteLog(log: Devlog) {
               <input autoFocus value={newTitle} onChange={e=>setNewTitle(e.target.value)} placeholder="What did you work on?" required maxLength={100}/></label>
             <label>Project (optional)<select value={newProjectId ?? ""} onChange={e=>setNewProjectId(e.target.value ? Number(e.target.value) : null)}><option value="">No linked project</option>{projects.map(p=><option key={p.id} value={p.id}>{p.name}</option>)}</select></label>
             <label>Activity type<select value={newActivityType} onChange={(event) => setNewActivityType(event.target.value)}>{activityTypes.map((type) => <option key={type}>{type}</option>)}</select></label>
-            <label>Visibility<select value={newLogStatus} onChange={(e) => setNewLogStatus(e.target.value as "draft" | "published")}><option value="draft">Draft (admins only)</option><option value="published">Published</option></select></label>
+            <label>Visibility<select value={newLogStatus} onChange={(e) => { const status = e.target.value as "draft" | "published"; setNewLogStatus(status); if (status === "published") setSelectedDevlogMediaIds((current) => current.filter((id) => media.some((item) => item.id === id && item.status === "published"))); }}><option value="draft">Draft (admins only)</option><option value="published">Published</option></select></label>
         <label>Description
           <textarea value={newDescription} onChange={e=>setNewDescription(e.target.value)} placeholder="What did you build, learn, or fix?" rows={4}/>
         </label>
+        <div className="devlog-media-picker">
+          <div className="devlog-tag-heading"><span>Images from Media</span><small>{selectedDevlogMediaIds.length ? `${selectedDevlogMediaIds.length} selected` : "Optional · click to attach"}</small></div>
+          {availableDevlogImages.length ? (
+            <div className="devlog-media-options">{availableDevlogImages.map((item) => {
+              const selected = selectedDevlogMediaIds.includes(item.id);
+              return <button type="button" key={item.id} className={`devlog-media-option ${selected ? "selected" : ""}`} aria-pressed={selected} onClick={() => setSelectedDevlogMediaIds((current) => selected ? current.filter((id) => id !== item.id) : [...current, item.id])}>
+                <img src={item.src} alt=""/><span>{item.name}</span>{selected && <Check size={14}/>}
+              </button>;
+            })}</div>
+          ) : <p className="devlog-tag-empty">No available images. Upload images in Media first.</p>}
+        </div>
               <div className="devlog-tag-selector">
         <div className="devlog-tag-heading">
           <span>Tags</span>
@@ -569,16 +666,19 @@ async function deleteLog(log: Devlog) {
       </div>}
       {isAdmin && showCreateProject && (
         <div className="modal-backdrop" onMouseDown={(e) => { if (e.target === e.currentTarget) setShowCreateProject(false); }}>
-          <form className="create-modal" onSubmit={createProject}>
+          <form className="create-modal project-create-modal" onSubmit={createProject}>
             <div className="modal-head"><div><span className="eyebrow">ORGANIZE YOUR WORK</span><h2>New project</h2></div>
               <button type="button" className="tiny-icon" onClick={() => setShowCreateProject(false)} aria-label="Close"><X size={18}/></button>
             </div>
-            <label>Project name<input autoFocus value={newProjectName} onChange={(e) => setNewProjectName(e.target.value)} placeholder="e.g. Finished a simulator game" required maxLength={60}/></label>
+            <label>Project name<input autoFocus value={newProjectName} onChange={(e) => setNewProjectName(e.target.value)} placeholder="e.g. Finished a simulator game" required maxLength={45}/></label>
             <label>Category<select value={categories.some((category) => String(category.id) === newProjectCategory) ? newProjectCategory : String(categories[0]?.id ?? "")} onChange={(e) => setNewProjectCategory(e.target.value)}>{categories.map((category) => <option key={category.id} value={category.id}>{category.name}</option>)}</select></label>
             <label>Description<textarea value={newProjectDescription} onChange={(e) => setNewProjectDescription(e.target.value)} placeholder="A short description (optional)" rows={3}/></label>
-            <label>Visibility<select value={newProjectStatus} onChange={(e) => setNewProjectStatus(e.target.value as "draft" | "published")}><option value="draft">Draft (admins only)</option><option value="published">Published</option></select></label>
+            <label>Upload a cover image<input type="file" accept="image/*" onChange={(event) => { const file = event.target.files?.[0]; if (!file) return; if (!file.type.startsWith("image/")) { setToast("Choose an image file for the project cover."); event.currentTarget.value = ""; return; } if (file.size > 50 * 1024 * 1024) { setToast("Images must be 50 MB or smaller."); event.currentTarget.value = ""; return; } setNewProjectImage(file); setNewProjectCoverMediaId(null); }}/></label>
+            {newProjectImage && <div className="project-cover-upload-preview"><LocalFilePreview file={newProjectImage} className="project-cover-preview-image" alt="Project cover preview"/><span>{newProjectImage.name}</span><button type="button" className="dark-button" onClick={() => setNewProjectImage(null)}>Remove image</button></div>}
+            {!newProjectImage && <CoverImagePicker media={media.filter((item) => item.status === "published" || newProjectStatus === "draft")} selectedId={newProjectCoverMediaId} onSelect={setNewProjectCoverMediaId} />}
+            <label>Visibility<select value={newProjectStatus} onChange={(e) => { const status = e.target.value as "draft" | "published"; setNewProjectStatus(status); if (status === "published" && newProjectCoverMediaId && media.find((item) => item.id === newProjectCoverMediaId)?.status !== "published") setNewProjectCoverMediaId(null); }}><option value="draft">Draft (admins only)</option><option value="published">Published</option></select></label>
             <TagPicker tags={tags} selected={selectedProjectTagIds} onChange={setSelectedProjectTagIds} label="Project tags" />
-            <div className="modal-actions"><button type="button" className="dark-button" onClick={() => setShowCreateProject(false)}>Cancel</button><button className="gold-button" type="submit"><Plus size={15}/> Add project</button></div>
+            <div className="modal-actions"><button type="button" className="dark-button" disabled={projectSaving} onClick={() => setShowCreateProject(false)}>Cancel</button><button className="gold-button" type="submit" disabled={projectSaving}>{projectSaving ? "Uploading and saving…" : <><Plus size={15}/> Add project</>}</button></div>
           </form>
         </div>
       )}
@@ -622,7 +722,88 @@ function HomepageEditor({ content, projects, media, activityTypes, onClose, onSa
   </form></div>;
 }
 
-function ProjectDetailPage({ project, categories, category, logs, media, availableMedia, tags, workCategories, workItems, repository, isAdmin, onBack, onSave }: {
+function ProjectContributionCard({ item, categoryName, isAdmin, repository }: { item: ProjectWorkItem; categoryName: string; isAdmin: boolean; repository: PortfolioRepository }) {
+  const [editing, setEditing] = useState(false);
+  const [confirmDelete, setConfirmDelete] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
+  const [title, setTitle] = useState(item.title);
+  const [description, setDescription] = useState(item.description);
+
+  async function save(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!title.trim()) return;
+    setSaving(true);
+    setError("");
+    try {
+      await repository.updateWorkItem(item.id, { title: title.trim(), description });
+      setEditing(false);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "Contribution could not be saved.");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function deleteItem() {
+    setSaving(true);
+    setError("");
+    try {
+      await repository.deleteWorkItem(item.id);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "Contribution could not be deleted.");
+      setConfirmDelete(false);
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return <article className="project-contribution-card">
+    {editing ? <form className="project-contribution-editor" onSubmit={(event) => void save(event)}>
+      <div className="project-contribution-editor-heading"><div><span className="eyebrow">EDIT CONTRIBUTION</span><strong>{categoryName}</strong></div><button type="button" className="tiny-icon" aria-label="Cancel editing" onClick={() => { setTitle(item.title); setDescription(item.description); setEditing(false); setError(""); }}><X size={15}/></button></div>
+      <label>Title<input required maxLength={100} value={title} onChange={(event) => setTitle(event.target.value)}/></label>
+      <label>Description<textarea rows={4} value={description} onChange={(event) => setDescription(event.target.value)} placeholder="Start a new line for each point"/></label>
+      {error && <p className="project-contribution-error" role="alert">{error}</p>}
+      <div className="project-contribution-actions"><button type="button" className="dark-button" disabled={saving} onClick={() => { setTitle(item.title); setDescription(item.description); setEditing(false); setError(""); }}>Cancel</button><button className="gold-button" disabled={saving}>{saving ? "Saving…" : <><Check size={14}/> Save changes</>}</button></div>
+    </form> : <>
+      <div className="project-contribution-copy"><div className="project-contribution-heading"><div><small>{categoryName} · {(item.status || "complete").replaceAll("-", " ")}</small><h3>{item.title}</h3></div><span className={`project-contribution-status status-${item.publicationStatus}`}>{item.publicationStatus}</span></div>
+        {item.description.trim() && <ul className="project-contribution-points">{item.description.split(/\r?\n/).map((point) => point.trim()).filter(Boolean).map((point, index) => <li key={`${index}-${point}`}>{point}</li>)}</ul>}
+      </div>
+      {isAdmin && <div className="project-work-admin-actions"><button type="button" className="project-work-action" onClick={() => { setTitle(item.title); setDescription(item.description); setEditing(true); setConfirmDelete(false); setError(""); }}><Pencil size={13}/> Edit</button><button type="button" className="project-work-action project-work-action-delete" onClick={() => { setConfirmDelete((current) => !current); setEditing(false); setError(""); }}><Trash2 size={13}/> Delete</button>{item.publicationStatus !== "published" && <button type="button" className="project-work-action" onClick={() => void repository.updateWorkItem(item.id, { publicationStatus: "published" }).catch((reason: unknown) => setError(reason instanceof Error ? reason.message : "Contribution could not be published."))}>Publish</button>}</div>}
+    </>}
+    {confirmDelete && <div className="project-contribution-confirm"><span>Delete <strong>{item.title}</strong>?</span><div><button type="button" className="dark-button" disabled={saving} onClick={() => setConfirmDelete(false)}>Keep it</button><button type="button" className="project-work-action project-work-action-delete" disabled={saving} onClick={() => void deleteItem()}>{saving ? "Deleting…" : "Delete contribution"}</button></div></div>}
+    {error && !editing && <p className="project-contribution-error" role="alert">{error}</p>}
+  </article>;
+}
+
+function ProjectWorkCategoryCard({ item, repository }: { item: ProjectWorkCategory; repository: PortfolioRepository }) {
+  const [editing, setEditing] = useState(false);
+  const [confirmDelete, setConfirmDelete] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
+  const [name, setName] = useState(item.name);
+  async function save(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!name.trim()) return;
+    setSaving(true); setError("");
+    try { await repository.updateWorkCategory(item.id, { name: name.trim() }); setEditing(false); }
+    catch (reason) { setError(reason instanceof Error ? reason.message : "Category could not be saved."); }
+    finally { setSaving(false); }
+  }
+  async function deleteItem() {
+    setSaving(true); setError("");
+    try { await repository.deleteWorkCategory(item.id); }
+    catch (reason) { setError(reason instanceof Error ? reason.message : "Category could not be deleted."); setConfirmDelete(false); }
+    finally { setSaving(false); }
+  }
+  return <div className="work-category-card">
+    {editing ? <form className="work-category-edit" onSubmit={(event) => void save(event)}><label>Category name<input required maxLength={60} value={name} onChange={(event) => setName(event.target.value)}/></label><div><button type="button" className="dark-button" disabled={saving} onClick={() => { setName(item.name); setEditing(false); }}>Cancel</button><button className="gold-button" disabled={saving}>{saving ? "Saving…" : "Save"}</button></div></form> : <><strong>{item.name}</strong><div className="project-work-admin-actions"><button type="button" className="project-work-action" onClick={() => { setName(item.name); setEditing(true); setConfirmDelete(false); }}><Pencil size={13}/> Edit</button><button type="button" className="project-work-action project-work-action-delete" onClick={() => setConfirmDelete((current) => !current)}><Trash2 size={13}/> Delete</button></div></>}
+    {confirmDelete && <div className="project-contribution-confirm"><span>Delete <strong>{item.name}</strong>?</span><div><button type="button" className="dark-button" disabled={saving} onClick={() => setConfirmDelete(false)}>Keep it</button><button type="button" className="project-work-action project-work-action-delete" disabled={saving} onClick={() => void deleteItem()}>{saving ? "Deleting…" : "Delete category"}</button></div></div>}
+    {error && <p className="project-contribution-error" role="alert">{error}</p>}
+  </div>;
+}
+
+function ProjectDetailPage({ project, categories, category, logs, media, availableMedia, tags, workCategories, workItems, repository, isAdmin, onBack, onDeleteProject, onSave }: {
   project: Project;
   categories: ProjectCategory[];
   category?: ProjectCategory;
@@ -635,10 +816,12 @@ function ProjectDetailPage({ project, categories, category, logs, media, availab
   repository: PortfolioRepository;
   isAdmin: boolean;
   onBack: () => void;
+  onDeleteProject: () => Promise<void>;
   onSave: (changes: Partial<Omit<Project, "id">>) => Promise<void>;
 }) {
   const [editing, setEditing] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [pinSaving, setPinSaving] = useState(false);
   const [workTitle, setWorkTitle] = useState("");
   const [workDescription, setWorkDescription] = useState("");
   const [workCategoryId, setWorkCategoryId] = useState("");
@@ -656,7 +839,7 @@ function ProjectDetailPage({ project, categories, category, logs, media, availab
   async function save(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault(); setSaving(true); setError("");
     try {
-      await onSave({ name: draft.name.trim(), categoryId: draft.categoryId, status: draft.status, summary: draft.summary.trim(), description: draft.summary.trim(), fullDescription: draft.fullDescription.trim(), role: draft.role.trim(), coverImage: draft.coverImage.trim(), coverMediaId: draft.coverMediaId ? Number(draft.coverMediaId) : null, coverImagePosition: draft.coverImagePosition,
+      await onSave({ name: draft.name.trim().slice(0, 45), categoryId: draft.categoryId, status: draft.status, summary: draft.summary.trim(), description: draft.summary.trim(), fullDescription: draft.fullDescription.trim(), role: draft.role.trim(), coverImage: draft.coverImage.trim(), coverMediaId: draft.coverMediaId ? Number(draft.coverMediaId) : null, coverImagePosition: draft.coverImagePosition,
         developmentStatus: draft.developmentStatus, releasePeriod: draft.releasePeriod.trim(), primaryAction: draft.primaryActionLabel.trim() && draft.primaryActionUrl.trim() ? { label: draft.primaryActionLabel.trim(), url: draft.primaryActionUrl.trim() } : null,
         tagIds: draft.tagIds, genres: draft.genres.split(",").map((value) => value.trim()).filter(Boolean), platforms: draft.platforms.split(",").map((value) => value.trim()).filter(Boolean), goals: draft.goals.split("\n").map((value) => value.trim()).filter(Boolean), keyFeatures: draft.keyFeatures.split("\n").map((value) => value.trim()).filter(Boolean),
       }); setEditing(false);
@@ -677,20 +860,20 @@ function ProjectDetailPage({ project, categories, category, logs, media, availab
   }
   return <article className="rich-project-page">
     <section className="rich-project-hero" style={{ backgroundPosition: project.coverImagePosition || "center", ...(projectCoverUrl(project, availableMedia, "") ? { backgroundImage: `linear-gradient(90deg,rgba(10,10,9,.96),rgba(10,10,9,.73) 52%,rgba(10,10,9,.28)),linear-gradient(0deg,rgba(10,10,9,.8),transparent 65%),url("${projectCoverUrl(project, availableMedia, "").replaceAll('"', "")}")` } : {}) }}>
-      <div className="rich-project-hero-inner"><button className="project-back-link" onClick={onBack}><ChevronLeft size={15}/> Back to projects</button><div className="rich-project-identity"><div><span className="eyebrow">{category?.name ?? "PROJECT"} {project.releasePeriod ? `· ${project.releasePeriod}` : ""}</span><h1>{project.name}</h1><p>{project.summary || project.description}</p><div className="rich-project-badges"><span>{project.role || category?.name || "Independent project"}</span><span>{(project.developmentStatus ?? "in-development").replaceAll("-", " ")}</span></div><TagChips ids={project.tagIds ?? []} tags={tags}/>{project.primaryAction?.url && <a className="gold-button" href={project.primaryAction.url} target="_blank" rel="noreferrer">{project.primaryAction.label || "View project"}<ArrowUpRight size={15}/></a>}</div></div></div>
+      <div className="rich-project-hero-inner"><button className="project-back-link" onClick={onBack}><ChevronLeft size={15}/> Back to projects</button><div className="rich-project-identity"><div><span className="eyebrow">{category?.name ?? "PROJECT"} {project.releasePeriod ? `· ${project.releasePeriod}` : ""}</span><h1>{project.name}</h1><p>{previewText(project.summary || project.description || "", 200)}</p><div className="rich-project-badges"><span>{project.role || category?.name || "Independent project"}</span><span>{(project.developmentStatus ?? "in-development").replaceAll("-", " ")}</span></div><TagChips ids={project.tagIds ?? []} tags={tags}/>{project.primaryAction?.url && <a className="gold-button" href={project.primaryAction.url} target="_blank" rel="noreferrer">{project.primaryAction.label || "View project"}<ArrowUpRight size={15}/></a>}</div></div></div>
       {project.statistics?.length ? <div className="rich-project-stats">{project.statistics.map((item) => <div key={item.id}><strong>{item.value}</strong><span>{item.label}</span><small>{item.source === "manual" ? "Maintained" : item.source === "external" ? "External" : "Calculated"}</small></div>)}</div> : null}
     </section>
-    {isAdmin && <div className="project-cover-media-select"><label>Cover media<select value={project.coverMediaId ?? ""} onChange={(event) => void onSave({ coverMediaId: event.target.value ? Number(event.target.value) : null }).catch(() => undefined)}><option value="">Use cover image URL</option>{availableMedia.filter((item) => item.type === "image" && item.status === "published").map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label></div>}
+    {isAdmin && <div className="project-admin-quick-actions"><button className="dark-button" disabled={pinSaving} onClick={async () => { setPinSaving(true); try { await onSave({ pinned: !project.pinned }); } catch { /* parent displays the save error */ } finally { setPinSaving(false); } }}><Pin size={14}/>{pinSaving ? "Saving…" : project.pinned ? "Unpin project" : "Pin project"}</button><button className="dark-button tag-delete-button" onClick={async () => { if (!window.confirm(`Delete project “${project.name}”? Its devlogs and media will be retained without the project link.`)) return; try { await onDeleteProject(); } catch (reason) { setError(reason instanceof Error ? reason.message : "Project could not be deleted."); } }}>Delete project</button><div className="project-cover-media-select"><label>Cover media<select value={project.coverMediaId ?? ""} onChange={(event) => void onSave({ coverMediaId: event.target.value ? Number(event.target.value) : null }).catch((reason) => setError(reason instanceof Error ? reason.message : "Could not update project cover"))}><option value="">Use cover image URL</option>{availableMedia.filter((item) => item.type === "image" && item.status === "published").map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label></div></div>}
     <div className="rich-project-content"><div className="rich-project-main">
-      <section><span className="eyebrow">01 — ABOUT THE PROJECT</span><h2>Overview</h2><p className="project-long-description">{project.fullDescription || project.description || "Project details are being prepared."}</p></section>
+      <section><span className="eyebrow">01 — ABOUT THE PROJECT</span><h2>Overview</h2><p className="project-long-description">{previewText(project.fullDescription || project.description || "Project details are being prepared.", 200)}</p></section>
       {project.goals?.length ? <section><span className="eyebrow">02 — INTENT</span><h2>Goals</h2><ul>{project.goals.map((goal, index) => <li key={`${goal}-${index}`}>{goal}</li>)}</ul></section> : null}
       {project.keyFeatures?.length ? <section><span className="eyebrow">03 — WHAT IT DOES</span><h2>Key features</h2><ul>{project.keyFeatures.map((feature, index) => <li key={`${feature}-${index}`}>{feature}</li>)}</ul></section> : null}
-      {(workItems.length > 0 || isAdmin) && <section><span className="eyebrow">04 — CONTRIBUTION</span><h2>Development work</h2>{workItems.length ? <div className="project-work-items">{workItems.slice().sort((a, b) => a.order - b.order).map((item) => <article key={item.id}><div><small>{workCategories.find((categoryItem) => categoryItem.id === item.categoryId)?.name || "Project work"} · {(item.status || "complete").replaceAll("-", " ")}</small><h3>{item.title}</h3><p>{item.description}</p></div>{isAdmin && <div className="project-work-admin-actions"><span>{item.publicationStatus}</span><button className="tiny-icon" onClick={() => { const title = window.prompt("Work item title", item.title); if (!title?.trim()) return; const description = window.prompt("Work item description", item.description); if (description === null) return; void repository.updateWorkItem(item.id, { title: title.trim(), description }).catch((reason: unknown) => setError(reason instanceof Error ? reason.message : "Work item update failed.")); }}>Edit</button><button className="tiny-icon tag-delete-button" onClick={() => { if (window.confirm(`Delete work item “${item.title}”?`)) void repository.deleteWorkItem(item.id).catch((reason: unknown) => setError(reason instanceof Error ? reason.message : "Work item delete failed.")); }}>Delete</button>{item.publicationStatus !== "published" && <button className="tiny-icon" onClick={() => void repository.updateWorkItem(item.id, { publicationStatus: "published" }).catch((reason: unknown) => setError(reason instanceof Error ? reason.message : "Work item update failed."))}>Publish</button>}</div>}</article>)}</div> : <p className="project-work-empty">No published development contributions yet.</p>}{isAdmin && <div className="project-work-manager"><form onSubmit={addWorkItem}><h3>Add contribution</h3><label>Title<input required value={workTitle} onChange={(event) => setWorkTitle(event.target.value)}/></label><label>Description<textarea rows={3} value={workDescription} onChange={(event) => setWorkDescription(event.target.value)}/></label><label>Work category<select value={workCategoryId} onChange={(event) => setWorkCategoryId(event.target.value)}><option value="">Uncategorized</option>{workCategories.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label><label>Visibility<select value={workVisibility} onChange={(event) => setWorkVisibility(event.target.value as typeof workVisibility)}><option value="draft">Draft</option><option value="published">Published</option></select></label><button className="gold-button"><Plus size={14}/> Add work item</button></form><form onSubmit={addWorkCategory}><h3>Work categories</h3>{workCategories.map((item) => <div className="work-category-row" key={item.id}><span>{item.name}</span><button type="button" className="tiny-icon" onClick={() => { const name = window.prompt("Work category name", item.name); if (name?.trim()) void repository.updateWorkCategory(item.id, { name: name.trim() }).catch((reason: unknown) => setError(reason instanceof Error ? reason.message : "Work category update failed.")); }}>Edit</button><button type="button" className="tiny-icon tag-delete-button" onClick={() => { if (window.confirm(`Delete work category “${item.name}”?`)) void repository.deleteWorkCategory(item.id).catch((reason: unknown) => setError(reason instanceof Error ? reason.message : "Work category delete failed.")); }}>Delete</button></div>)}<label>New work category<input value={newWorkCategory} onChange={(event) => setNewWorkCategory(event.target.value)} placeholder="e.g. Multiplayer systems"/></label><button className="dark-button"><Plus size={14}/> Add category</button></form></div>}</section>}
+      {(workItems.length > 0 || isAdmin) && <section><span className="eyebrow">04 — CONTRIBUTION</span><h2>Development work</h2>{workItems.length ? <div className="project-work-items">{workItems.slice().sort((a, b) => a.order - b.order).map((item) => <ProjectContributionCard key={item.id} item={item} categoryName={workCategories.find((entry) => entry.id === item.categoryId)?.name ?? "Project work"} isAdmin={isAdmin} repository={repository} />)}</div> : <p className="project-work-empty">No published development contributions yet.</p>}{isAdmin && <div className="project-work-manager"><form onSubmit={addWorkItem}><h3>Add contribution</h3><label>Title<input required value={workTitle} onChange={(event) => setWorkTitle(event.target.value)}/></label><label>Description<textarea rows={3} value={workDescription} onChange={(event) => setWorkDescription(event.target.value)}/></label><label>Work category<select value={workCategoryId} onChange={(event) => setWorkCategoryId(event.target.value)}><option value="">Uncategorized</option>{workCategories.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label><label>Visibility<select value={workVisibility} onChange={(event) => setWorkVisibility(event.target.value as typeof workVisibility)}><option value="draft">Draft</option><option value="published">Published</option></select></label><button className="gold-button"><Plus size={14}/> Add work item</button></form><form onSubmit={addWorkCategory}><h3>Work categories</h3>{workCategories.map((item) => <ProjectWorkCategoryCard key={item.id} item={item} repository={repository} />)}<label>New work category<input value={newWorkCategory} onChange={(event) => setNewWorkCategory(event.target.value)} placeholder="e.g. Multiplayer systems"/></label><button className="dark-button"><Plus size={14}/> Add category</button></form></div>}</section>}
       {relatedMedia.length > 0 && <section><span className="eyebrow">04 — SELECTED WORK</span><h2>Project media</h2><div className="rich-project-gallery">{relatedMedia.map((item) => item.type === "video" ? <video key={item.id} src={item.src} controls aria-label={item.name}/> : <figure key={item.id}><img src={item.src} alt={item.altText || item.name}/>{item.caption && <figcaption>{item.caption}</figcaption>}</figure>)}</div></section>}
       {logs.length > 0 && <section><span className="eyebrow">05 — JOURNAL</span><h2>Related devlogs</h2><div className="rich-related-logs">{logs.map((log) => <article key={log.id}><time>{log.date}</time><h3>{log.title}</h3><p>{log.description}</p><TagChips ids={log.tagIds ?? []} tags={tags}/></article>)}</div></section>}
       {[...[project.problems, project.lessonsLearned, project.futurePlans] as const].map((notes, index) => notes?.length ? <section key={index}><span className="eyebrow">{["06 — CHALLENGES", "07 — TAKEAWAYS", "08 — NEXT STEPS"][index]}</span><h2>{["Problems and solutions", "Lessons learned", "Future plans"][index]}</h2>{notes.map((note) => <article className="rich-note" key={note.id}><h3>{note.heading}</h3><p>{note.content}</p></article>)}</section> : null)}
     </div><aside className="rich-project-sidebar"><span className="eyebrow">PROJECT DETAILS</span>{project.role && <p><small>ROLE</small><strong>{project.role}</strong></p>}<p><small>STATUS</small><strong>{(project.developmentStatus ?? "in-development").replaceAll("-", " ")}</strong></p>{project.startDate && <p><small>STARTED</small><strong>{project.startDate}</strong></p>}{project.completedDate && <p><small>COMPLETED</small><strong>{project.completedDate}</strong></p>}{project.genres?.length ? <p><small>GENRES</small><strong>{project.genres.join(", ")}</strong></p> : null}{project.platforms?.length ? <p><small>PLATFORMS</small><strong>{project.platforms.join(", ")}</strong></p> : null}{project.technologies?.length ? <p><small>TECHNOLOGIES</small><strong>{project.technologies.map((tech) => tech.name).join(", ")}</strong></p> : null}{project.externalLinks?.map((link) => <a key={link.id} href={link.url} target="_blank" rel="noreferrer">{link.label} <ArrowUpRight size={13}/></a>)}</aside></div>
-    {isAdmin && <div className="rich-project-admin"><button className="dark-button" onClick={() => setEditing((current) => !current)}><Pencil size={14}/>{editing ? "Close editor" : "Edit project details"}</button>{editing && <form className="rich-project-editor" onSubmit={save}><h2>Project details</h2><label>Title<input required value={draft.name} onChange={(event) => setDraft((current) => ({ ...current, name: event.target.value }))}/></label><label>Category<select value={draft.categoryId} onChange={(event) => setDraft((current) => ({ ...current, categoryId: Number(event.target.value) }))}>{categories.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label><label>Publication<select value={draft.status} onChange={(event) => setDraft((current) => ({ ...current, status: event.target.value as Project["status"] }))}><option value="draft">Draft</option><option value="published">Published</option><option value="unpublished">Unpublished</option></select></label><label>Summary<input value={draft.summary} onChange={(event) => setDraft((current) => ({ ...current, summary: event.target.value }))}/></label><label>Full description<textarea rows={6} value={draft.fullDescription} onChange={(event) => setDraft((current) => ({ ...current, fullDescription: event.target.value }))}/></label><label>Cover image URL<input type="text" value={draft.coverImage} onChange={(event) => setDraft((current) => ({ ...current, coverImage: event.target.value }))}/></label><label>Cover image position<input value={draft.coverImagePosition} onChange={(event) => setDraft((current) => ({ ...current, coverImagePosition: event.target.value }))}/></label><label>Role<input value={draft.role} onChange={(event) => setDraft((current) => ({ ...current, role: event.target.value }))}/></label><label>Development status<select value={draft.developmentStatus} onChange={(event) => setDraft((current) => ({ ...current, developmentStatus: event.target.value as typeof current.developmentStatus }))}><option value="in-development">In development</option><option value="on-hold">On hold</option><option value="completed">Completed</option><option value="released">Released</option></select></label><label>Release period<input value={draft.releasePeriod} onChange={(event) => setDraft((current) => ({ ...current, releasePeriod: event.target.value }))}/></label><label>Primary action label<input value={draft.primaryActionLabel} onChange={(event) => setDraft((current) => ({ ...current, primaryActionLabel: event.target.value }))}/></label><label>Primary action URL<input type="url" value={draft.primaryActionUrl} onChange={(event) => setDraft((current) => ({ ...current, primaryActionUrl: event.target.value }))}/></label><label>Genres (comma separated)<input value={draft.genres} onChange={(event) => setDraft((current) => ({ ...current, genres: event.target.value }))}/></label><label>Platforms (comma separated)<input value={draft.platforms} onChange={(event) => setDraft((current) => ({ ...current, platforms: event.target.value }))}/></label><label>Goals (one per line)<textarea rows={3} value={draft.goals} onChange={(event) => setDraft((current) => ({ ...current, goals: event.target.value }))}/></label><label>Key features (one per line)<textarea rows={3} value={draft.keyFeatures} onChange={(event) => setDraft((current) => ({ ...current, keyFeatures: event.target.value }))}/></label><div className="devlog-tag-selector"><span>Project tags</span><TagPicker tags={tags} selected={draft.tagIds} onChange={(tagIds) => setDraft((current) => ({ ...current, tagIds }))} label="Choose tags"/></div>{error && <p role="alert">{error}</p>}<button className="gold-button" disabled={saving}>{saving ? "Saving…" : "Save project"}</button></form>}</div>}
+    {isAdmin && <div className="rich-project-admin"><button className="dark-button" onClick={() => setEditing((current) => !current)}><Pencil size={14}/>{editing ? "Close editor" : "Edit project details"}</button>{editing && <form className="rich-project-editor" onSubmit={save}><h2>Project details</h2><label>Title<input required maxLength={45} value={draft.name} onChange={(event) => setDraft((current) => ({ ...current, name: event.target.value }))}/></label><label>Category<select value={draft.categoryId} onChange={(event) => setDraft((current) => ({ ...current, categoryId: Number(event.target.value) }))}>{categories.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label><label>Publication<select value={draft.status} onChange={(event) => { const status = event.target.value as Project["status"]; setDraft((current) => ({ ...current, status, ...(status === "published" && current.coverMediaId && media.find((item) => item.id === Number(current.coverMediaId))?.status !== "published" ? { coverMediaId: "" } : {}) })); }}><option value="draft">Draft</option><option value="published">Published</option><option value="unpublished">Unpublished</option></select></label><label>Summary<input value={draft.summary} onChange={(event) => setDraft((current) => ({ ...current, summary: event.target.value }))}/></label><label>Full description<textarea rows={6} value={draft.fullDescription} onChange={(event) => setDraft((current) => ({ ...current, fullDescription: event.target.value }))}/></label><CoverImagePicker media={availableMedia.filter((item) => item.status === "published" || draft.status === "draft")} selectedId={draft.coverMediaId ? Number(draft.coverMediaId) : null} onSelect={(id) => setDraft((current) => ({ ...current, coverMediaId: id?.toString() ?? "" }))} /><label>Cover image URL<input type="text" value={draft.coverImage} onChange={(event) => setDraft((current) => ({ ...current, coverImage: event.target.value }))}/></label><label>Cover image position<input value={draft.coverImagePosition} onChange={(event) => setDraft((current) => ({ ...current, coverImagePosition: event.target.value }))}/></label><label>Role<input value={draft.role} onChange={(event) => setDraft((current) => ({ ...current, role: event.target.value }))}/></label><label>Development status<select value={draft.developmentStatus} onChange={(event) => setDraft((current) => ({ ...current, developmentStatus: event.target.value as typeof current.developmentStatus }))}><option value="in-development">In development</option><option value="on-hold">On hold</option><option value="completed">Completed</option><option value="released">Released</option></select></label><label>Release period<input value={draft.releasePeriod} onChange={(event) => setDraft((current) => ({ ...current, releasePeriod: event.target.value }))}/></label><label>Primary action label<input value={draft.primaryActionLabel} onChange={(event) => setDraft((current) => ({ ...current, primaryActionLabel: event.target.value }))}/></label><label>Primary action URL<input type="url" value={draft.primaryActionUrl} onChange={(event) => setDraft((current) => ({ ...current, primaryActionUrl: event.target.value }))}/></label><label>Genres (comma separated)<input value={draft.genres} onChange={(event) => setDraft((current) => ({ ...current, genres: event.target.value }))}/></label><label>Platforms (comma separated)<input value={draft.platforms} onChange={(event) => setDraft((current) => ({ ...current, platforms: event.target.value }))}/></label><label>Goals (one per line)<textarea rows={3} value={draft.goals} onChange={(event) => setDraft((current) => ({ ...current, goals: event.target.value }))}/></label><label>Key features (one per line)<textarea rows={3} value={draft.keyFeatures} onChange={(event) => setDraft((current) => ({ ...current, keyFeatures: event.target.value }))}/></label><div className="devlog-tag-selector"><span>Project tags</span><TagPicker tags={tags} selected={draft.tagIds} onChange={(tagIds) => setDraft((current) => ({ ...current, tagIds }))} label="Choose tags"/></div>{error && <p role="alert">{error}</p>}<button className="gold-button" disabled={saving}>{saving ? "Saving…" : "Save project"}</button></form>}</div>}
   </article>;
 }
 
@@ -739,6 +922,7 @@ function TimelinePage({
   onEdit: (log: Devlog) => void;
   onDelete: (log: Devlog) => void;
 }) {
+  const [filtersOpen, setFiltersOpen] = useState(false);
   const groupedLogs = useMemo(() => {
     const groups: { label: string; logs: Devlog[] }[] = [];
 
@@ -769,6 +953,7 @@ function TimelinePage({
   if (filters.dateRange !== "any") activeFilterChips.push({ label: filters.dateRange === "custom" ? `Date ${filters.startDate || "…"} – ${filters.endDate || "…"}` : `Date: ${filters.dateRange}`, clear: () => setFilters((current) => ({ ...current, dateRange: "any", startDate: "", endDate: "" })) });
   if (filters.activityType !== "all") activeFilterChips.push({ label: filters.activityType, clear: () => setFilters((current) => ({ ...current, activityType: "all" })) });
   if (filters.contentType !== "all") activeFilterChips.push({ label: `Content: ${filters.contentType}`, clear: () => setFilters((current) => ({ ...current, contentType: "all" })) });
+  if (filters.sort !== "newest") activeFilterChips.push({ label: `Sort: ${filters.sort}`, clear: () => setFilters((current) => ({ ...current, sort: "newest" })) });
   if (filters.status !== "all") activeFilterChips.push({ label: filters.status, clear: () => setFilters((current) => ({ ...current, status: "all" })) });
   for (const [key, label] of [["hasProblems", "Has problems"], ["hasBugsFixed", "Has bugs fixed"], ["hasNextPlans", "Has next plans"], ["hasCode", "Has code"], ["recentlyUpdated", "Recently updated"]] as const) {
     if (filters[key]) activeFilterChips.push({ label, clear: () => setFilters((current) => ({ ...current, [key]: false })) });
@@ -809,19 +994,7 @@ function TimelinePage({
       </div>
 
       <div className="timeline-toolbar">
-        <div className="timeline-filters">
-          {["All", ...projects.map((project) => project.name)].map((name) => (
-            <button
-              key={name}
-              className={`filter-chip ${
-                activeProject === name ? "chip-active" : ""
-              }`}
-              onClick={() => setActiveProject(name)}
-            >
-              {name}
-            </button>
-          ))}
-        </div>
+        <button className={`timeline-filter-trigger ${filtersOpen ? "is-open" : ""}`} aria-expanded={filtersOpen} onClick={() => setFiltersOpen((open) => !open)}><Filter size={15}/> Filters{activeFilterChips.length > 0 && <span>{activeFilterChips.length}</span>}</button>
 
         <label className="timeline-search">
           <Search size={16} />
@@ -838,9 +1011,9 @@ function TimelinePage({
         </label>
       </div>
 
-      <div className="advanced-filter-grid" aria-label="Devlog filters">
-        <label>Category<select value={filters.categoryId ?? ""} onChange={(event) => setFilters((current) => ({ ...current, categoryId: event.target.value ? Number(event.target.value) : null, projectId: null }))}><option value="">All categories</option>{categories.map((category) => <option key={category.id} value={category.id}>{category.name}</option>)}</select></label>
-        <label>Project<select value={filters.projectId ?? ""} onChange={(event) => setFilters((current) => ({ ...current, projectId: event.target.value ? Number(event.target.value) : null }))}><option value="">All projects</option>{availableProjects.filter((project) => filters.categoryId === null || project.categoryId === filters.categoryId).map((project) => <option key={project.id} value={project.id}>{project.name}</option>)}</select></label>
+      {filtersOpen && <div className="advanced-filter-popover"><div className="advanced-filter-grid" aria-label="Devlog filters">
+        <label>Category<select value={filters.categoryId ?? ""} onChange={(event) => { const categoryId = event.target.value ? Number(event.target.value) : null; setFilters((current) => ({ ...current, categoryId, projectId: null })); setActiveProject("All"); }}><option value="">All categories</option>{categories.map((category) => <option key={category.id} value={category.id}>{category.name}</option>)}</select></label>
+        <label>Project<select value={filters.projectId ?? ""} onChange={(event) => { setFilters((current) => ({ ...current, projectId: event.target.value ? Number(event.target.value) : null })); setActiveProject("All"); }}><option value="">All projects</option>{availableProjects.filter((project) => filters.categoryId === null || project.categoryId === filters.categoryId).map((project) => <option key={project.id} value={project.id}>{project.name}</option>)}</select></label>
         <label>Tags · match all<select multiple value={filters.tagIds.map(String)} onChange={(event) => setFilters((current) => ({ ...current, tagIds: Array.from(event.target.selectedOptions, (option) => Number(option.value)) }))}>{tags.map((tag) => <option key={tag.id} value={tag.id}>{tag.name}</option>)}</select></label>
         <label>Date created<select value={filters.dateRange} onChange={(event) => setFilters((current) => ({ ...current, dateRange: event.target.value as DevlogFilters["dateRange"] }))}><option value="any">Any time</option><option value="today">Today</option><option value="7d">Last 7 days</option><option value="30d">Last 30 days</option><option value="month">This month</option><option value="year">This year</option><option value="custom">Custom range</option></select></label>
         {filters.dateRange === "custom" && <><label>From<input type="date" value={filters.startDate} onChange={(event) => setFilters((current) => ({ ...current, startDate: event.target.value }))}/></label><label>To<input type="date" value={filters.endDate} onChange={(event) => setFilters((current) => ({ ...current, endDate: event.target.value }))}/></label></>}
@@ -849,8 +1022,8 @@ function TimelinePage({
         <label>Sort<select value={filters.sort} onChange={(event) => setFilters((current) => ({ ...current, sort: event.target.value as DevlogFilters["sort"] }))}><option value="newest">Newest first</option><option value="oldest">Oldest first</option><option value="updated">Recently updated</option><option value="title">Title A–Z</option></select></label>
         {isAdmin && <label>Status<select value={filters.status} onChange={(event) => setFilters((current) => ({ ...current, status: event.target.value as DevlogFilters["status"] }))}><option value="all">All statuses</option><option value="published">Published</option><option value="draft">Draft</option><option value="unpublished">Unpublished</option></select></label>}
         {(["hasProblems", "hasBugsFixed", "hasNextPlans", "hasCode", "recentlyUpdated"] as const).map((key) => <label className="filter-check" key={key}><input type="checkbox" checked={filters[key]} onChange={(event) => setFilters((current) => ({ ...current, [key]: event.target.checked }))}/>{{ hasProblems: "Has problems", hasBugsFixed: "Has bugs fixed", hasNextPlans: "Has next plans", hasCode: "Has code", recentlyUpdated: "Recently updated" }[key]}</label>)}
-        <button className="dark-button filter-reset" onClick={() => { setFilters(defaultDevlogFilters); setSearch(""); setActiveProject("All"); }}>Clear all filters</button>
-      </div>
+        <button type="button" className="dark-button filter-reset" onClick={() => { setFilters(defaultDevlogFilters); setSearch(""); setActiveProject("All"); setFiltersOpen(false); }}>Clear all</button>
+      </div></div>}
 
       {activeFilterChips.length > 0 && <div className="active-filter-chips" aria-label="Active filters">{activeFilterChips.map((chip, index) => <button key={`${chip.label}-${index}`} onClick={chip.clear}>{chip.label}<X size={12}/></button>)}</div>}
 
@@ -952,7 +1125,7 @@ function TimelinePage({
 
 function ProjectsPage({
   projects, categories, tags, logs, isAdmin, activeProject, setActiveProject, repository, onOpenProject, availableMedia,
-    setCategories, setLogs, setActiveNav, search, setSearch, onCreateLog, onCreateProject, onRecordActivity,
+    setCategories, setLogs, setMedia, setWorkItems, setActiveNav, search, setSearch, onCreateLog, onCreateProject, onRecordActivity,
   setProjects,
 }: {
   projects: Project[];
@@ -974,6 +1147,8 @@ function ProjectsPage({
   onCreateProject: () => void;
   onRecordActivity: (action: ActivityEntry["action"], entity: ActivityEntry["entity"], title: string, project?: string, details?: string) => void;
   setProjects: React.Dispatch<React.SetStateAction<Project[]>>;
+  setMedia: React.Dispatch<React.SetStateAction<MediaRecord[]>>;
+  setWorkItems: React.Dispatch<React.SetStateAction<ProjectWorkItem[]>>;
 }) {
   const descriptions: Record<string, string> = {
     Blender: "3D modelling, low-poly assets, materials, animation and renders.",
@@ -983,6 +1158,15 @@ function ProjectsPage({
     Miscellaneous: "Tools, experiments, learning notes and everything in between.",
   };
 
+  const [workspaceEditing, setWorkspaceEditing] = useState(false);
+  const [workspaceSaving, setWorkspaceSaving] = useState(false);
+  const [workspaceError, setWorkspaceError] = useState("");
+  const [workspaceDraft, setWorkspaceDraft] = useState({ name: "", description: "" });
+  const [editingCategoryId, setEditingCategoryId] = useState<number | null>(null);
+  const [confirmDeleteCategoryId, setConfirmDeleteCategoryId] = useState<number | null>(null);
+  const [categoryDraft, setCategoryDraft] = useState({ name: "", color: "#e8b85a" });
+  const [categorySaving, setCategorySaving] = useState(false);
+  const [categoryError, setCategoryError] = useState("");
   const filteredProjects = projects.filter((project) => {
     const query = search.trim().toLowerCase();
     const category = categories.find((item) => item.id === project.categoryId);
@@ -991,7 +1175,7 @@ function ProjectsPage({
       (!query || project.name.toLowerCase().includes(query) ||
       (project.description || descriptions[category?.name ?? ""] || "").toLowerCase().includes(query))
     );
-  });
+  }).sort((a, b) => Number(Boolean(b.pinned)) - Number(Boolean(a.pinned)));
 
   const selectedProject = projects.find((project) => project.name === activeProject);
   const selectedCategory = selectedProject && categories.find((category) => category.id === selectedProject.categoryId);
@@ -999,6 +1183,58 @@ function ProjectsPage({
   const projectLogs = logs
     .filter((log) => selectedProject ? log.projectId === selectedProject.id : false)
     .sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
+
+  async function togglePin(project: Project) {
+    try {
+      const updated = await repository.updateProject(project.id, { pinned: !project.pinned });
+      setProjects((current) => current.map((item) => item.id === updated.id ? { ...item, ...updated } : item));
+      onRecordActivity("edited", "Project", project.name, categories.find((item) => item.id === project.categoryId)?.name, `${updated.pinned ? "Pinned" : "Unpinned"} project`);
+    } catch (error) { window.alert(error instanceof Error ? error.message : "Could not update project pin"); }
+  }
+
+  async function saveWorkspace(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!selectedProject) return;
+    setWorkspaceSaving(true); setWorkspaceError("");
+    try {
+      const name = workspaceDraft.name.trim().slice(0, 45);
+      if (!name) throw new Error("Project name is required.");
+      const updated = await repository.updateProject(selectedProject.id, { name, description: workspaceDraft.description.trim() });
+      setProjects((current) => current.map((item) => item.id === updated.id ? { ...item, ...updated } : item));
+      setLogs((current) => current.map((log) => log.projectId === updated.id ? { ...log, project: updated.name } : log));
+      onRecordActivity("edited", "Project", updated.name, categories.find((item) => item.id === updated.categoryId)?.name, `Workspace details updated from “${selectedProject.name}”`);
+      setActiveProject(updated.name); setWorkspaceEditing(false);
+    } catch (error) { setWorkspaceError(error instanceof Error ? error.message : "Project changes could not be saved."); }
+    finally { setWorkspaceSaving(false); }
+  }
+
+  async function saveCategory(event: React.FormEvent<HTMLFormElement>, category: ProjectCategory) {
+    event.preventDefault();
+    const name = categoryDraft.name.trim();
+    if (!name) { setCategoryError("Category name is required."); return; }
+    if (categories.some((item) => item.id !== category.id && item.name.toLowerCase() === name.toLowerCase())) { setCategoryError("A category with that name already exists."); return; }
+    setCategorySaving(true); setCategoryError("");
+    try {
+      const updated = await repository.updateCategory(category.id, { name, color: categoryDraft.color });
+      setCategories((current) => current.map((item) => item.id === updated.id ? updated : item));
+      if (activeProject === category.name) setActiveProject(updated.name);
+      onRecordActivity("edited", "Category", updated.name, "Categories", `Name or color changed from ${category.name}`);
+      setEditingCategoryId(null);
+    } catch (error) { setCategoryError(error instanceof Error ? error.message : "Could not update category."); }
+    finally { setCategorySaving(false); }
+  }
+
+  async function deleteCategory(category: ProjectCategory) {
+    setCategorySaving(true); setCategoryError("");
+    try {
+      await repository.deleteCategory(category.id);
+      setCategories((current) => current.filter((item) => item.id !== category.id));
+      if (activeProject === category.name) setActiveProject("All");
+      onRecordActivity("deleted", "Category", category.name, "Categories");
+      setConfirmDeleteCategoryId(null);
+    } catch (error) { setCategoryError(error instanceof Error ? error.message : "Could not delete category. Move or delete its projects first."); }
+    finally { setCategorySaving(false); }
+  }
 
   return (
     <section className="projects-page">
@@ -1035,7 +1271,11 @@ function ProjectsPage({
       </div>
 
       <div className="media-project-filters" aria-label="Project categories">
-        {categories.map((category) => <span key={category.id} className="category-filter-wrap"><button className={activeProject === category.name ? "filter-chip chip-active" : "filter-chip"} onClick={() => setActiveProject(activeProject === category.name ? "All" : category.name)}>{category.name}</button>{isAdmin && <><button className="tiny-icon" aria-label={`Edit ${category.name}`} onClick={() => { const name = window.prompt("Category name", category.name); if (!name?.trim()) return; const color = window.prompt("Category color (hex)", category.color); void repository.updateCategory(category.id, { name: name.trim(), color: color || category.color }).then((updated) => { setCategories((current) => current.map((item) => item.id === updated.id ? updated : item)); onRecordActivity("edited", "Category", updated.name, "Categories", `Name or color changed from ${category.name}`); }).catch((error: unknown) => window.alert(error instanceof Error ? error.message : "Could not update category")); }}><Pencil size={13}/></button><button className="tiny-icon tag-delete-button" aria-label={`Delete ${category.name}`} onClick={() => { if (!window.confirm(`Delete category “${category.name}”?`)) return; void repository.deleteCategory(category.id).then(() => { setCategories((current) => current.filter((item) => item.id !== category.id)); onRecordActivity("deleted", "Category", category.name, "Categories"); }).catch((error: unknown) => window.alert(error instanceof Error ? error.message : "Could not delete category. Move or delete its projects first.")); }}><Trash2 size={13}/></button></>}</span>)}
+        {categories.map((category) => <div key={category.id} className="category-filter-wrap">
+          <div className="category-filter-controls"><button className={activeProject === category.name ? "filter-chip chip-active" : "filter-chip"} onClick={() => setActiveProject(activeProject === category.name ? "All" : category.name)}>{category.name}</button>{isAdmin && <><button type="button" className="tiny-icon" aria-label={`Edit ${category.name}`} onClick={() => { setCategoryDraft({ name: category.name, color: category.color }); setCategoryError(""); setConfirmDeleteCategoryId(null); setEditingCategoryId((current) => current === category.id ? null : category.id); }}><Pencil size={13}/></button><button type="button" className="tiny-icon tag-delete-button" aria-label={`Delete ${category.name}`} onClick={() => { setCategoryError(""); setEditingCategoryId(null); setConfirmDeleteCategoryId((current) => current === category.id ? null : category.id); }}><Trash2 size={13}/></button></>}</div>
+          {isAdmin && editingCategoryId === category.id && <form className="category-inline-card" onSubmit={(event) => void saveCategory(event, category)}><strong>Edit category</strong><label>Name<input required maxLength={60} value={categoryDraft.name} onChange={(event) => setCategoryDraft((current) => ({ ...current, name: event.target.value }))}/></label><label>Color<input type="color" value={categoryDraft.color} onChange={(event) => setCategoryDraft((current) => ({ ...current, color: event.target.value }))}/></label>{categoryError && <p role="alert">{categoryError}</p>}<div><button type="button" className="dark-button" disabled={categorySaving} onClick={() => setEditingCategoryId(null)}>Cancel</button><button className="gold-button" disabled={categorySaving}>{categorySaving ? "Saving…" : "Save"}</button></div></form>}
+          {isAdmin && confirmDeleteCategoryId === category.id && <div className="category-inline-card category-inline-confirm"><strong>Delete {category.name}?</strong><p>Categories that still contain projects cannot be deleted.</p>{categoryError && <p role="alert">{categoryError}</p>}<div><button type="button" className="dark-button" disabled={categorySaving} onClick={() => setConfirmDeleteCategoryId(null)}>Cancel</button><button type="button" className="project-work-action project-work-action-delete" disabled={categorySaving} onClick={() => void deleteCategory(category)}>{categorySaving ? "Deleting…" : "Delete category"}</button></div></div>}
+        </div>)}
       </div>
 
       {selectedProject ? (
@@ -1057,8 +1297,10 @@ function ProjectsPage({
             >
               Open Timeline <ArrowRight size={14} />
             </button>
-            {isAdmin && <><button className="tiny-icon" aria-label="Edit project" title="Edit project" onClick={() => { const name = window.prompt("Project name", selectedProject.name); if (!name?.trim()) return; const description = window.prompt("Project description", selectedProject.description); const nextName = name.trim(); void repository.updateProject(selectedProject.id, { name: nextName, description: description ?? selectedProject.description }).then((updated) => { setProjects((current) => current.map((project) => project.id === updated.id ? updated : project)); setLogs((current) => current.map((log) => log.projectId === updated.id ? { ...log, project: updated.name } : log)); onRecordActivity("edited", "Project", nextName, selectedCategory?.name, `Name or description changed from “${selectedProject.name}”`); setActiveProject(nextName); }).catch((error: unknown) => window.alert(error instanceof Error ? error.message : "Could not update project")); }}><Pencil size={15}/></button><button className="tiny-icon tag-delete-button" aria-label="Delete project" title="Delete project" onClick={() => { if (!window.confirm(`Delete project “${selectedProject.name}”?`)) return; void repository.deleteProject(selectedProject.id).then(() => { setProjects((current) => current.filter((project) => project.id !== selectedProject.id)); setLogs((current) => current.map((log) => log.projectId === selectedProject.id ? { ...log, projectId: undefined, project: "Unassigned" } : log)); onRecordActivity("deleted", "Project", selectedProject.name, selectedCategory?.name, "Project deleted"); setActiveProject("All"); }).catch((error: unknown) => window.alert(error instanceof Error ? error.message : "Could not delete project")); }}><Trash2 size={15}/></button></>}
+            {isAdmin && <><button className="dark-button" onClick={() => void togglePin(selectedProject)}><Pin size={14}/>{selectedProject.pinned ? "Unpin project" : "Pin project"}</button><button className="tiny-icon" aria-label="Edit project" title="Edit project" onClick={() => { setWorkspaceDraft({ name: selectedProject.name, description: selectedProject.description }); setWorkspaceError(""); setWorkspaceEditing((value) => !value); }}><Pencil size={15}/></button><button className="tiny-icon tag-delete-button" aria-label="Delete project" title="Delete project" onClick={() => { if (!window.confirm(`Delete project “${selectedProject.name}”? Its devlogs and media will be kept and unlinked.`)) return; void repository.deleteProject(selectedProject.id).then(() => { setProjects((current) => current.filter((project) => project.id !== selectedProject.id)); setLogs((current) => current.map((log) => log.projectId === selectedProject.id ? { ...log, projectId: undefined, project: "Unassigned" } : log)); setMedia((current) => current.map((item) => item.projectId === selectedProject.id ? { ...item, projectId: undefined, ...(selectedProject.status !== "published" && item.status === "published" ? { status: "draft" as const } : {}) } : item)); setWorkItems((current) => current.filter((item) => item.projectId !== selectedProject.id)); onRecordActivity("deleted", "Project", selectedProject.name, selectedCategory?.name, "Project deleted; related devlogs and media were retained without the project link"); setActiveProject("All"); }).catch((error: unknown) => window.alert(error instanceof Error ? error.message : "Could not delete project")); }}><Trash2 size={15}/></button></>}
           </div>
+
+          {isAdmin && workspaceEditing && <form className="workspace-editor-card" onSubmit={saveWorkspace}><div><span className="eyebrow">WORKSPACE DETAILS</span><h2>Edit project workspace</h2><p>Update the name and description visitors see for this project.</p></div><label>Project name<input required maxLength={45} value={workspaceDraft.name} onChange={(event) => setWorkspaceDraft((current) => ({ ...current, name: event.target.value }))}/></label><label>Description<textarea rows={4} value={workspaceDraft.description} onChange={(event) => setWorkspaceDraft((current) => ({ ...current, description: event.target.value }))}/></label>{workspaceError && <p role="alert" className="auth-form-error">{workspaceError}</p>}<div className="modal-actions"><button type="button" className="dark-button" disabled={workspaceSaving} onClick={() => setWorkspaceEditing(false)}>Cancel</button><button className="gold-button" disabled={workspaceSaving}>{workspaceSaving ? "Saving…" : "Save changes"}</button></div></form>}
 
           <article className="project-detail-card">
             <div
@@ -1158,9 +1400,9 @@ function ProjectsPage({
                 const category = categories.find((item) => item.id === project.categoryId);
 
                 return (
+                  <div className="projects-card-wrap" key={project.id}>
                   <button
                     className="projects-page-card"
-                    key={project.name}
                     onClick={() => onOpenProject(project)}
                   >
                     <div className="projects-page-cover">
@@ -1193,7 +1435,7 @@ function ProjectsPage({
                         <h3>{project.name}</h3>
                         <span>{String(index + 1).padStart(2, "0")}</span>
                       </div>
-                      <p>{project.description || descriptions[category?.name ?? ""] || `${category?.name ?? "Creative"} project.`}</p>
+                      <p>{previewText(project.description || descriptions[category?.name ?? ""] || `${category?.name ?? "Creative"} project.`)}</p>
                       <TagChips ids={project.tagIds} tags={tags}/>
                       <div className="projects-page-card-footer">
                         <span><FileText size={13} /> {count} devlogs</span>
@@ -1201,6 +1443,9 @@ function ProjectsPage({
                       </div>
                     </div>
                   </button>
+                  {project.pinned && <span className="project-pinned-badge"><Pin size={12}/> Pinned</span>}
+                  {isAdmin && <button className="project-pin-toggle" aria-label={project.pinned ? `Unpin ${project.name}` : `Pin ${project.name}`} title={project.pinned ? "Unpin project" : "Pin project"} onClick={() => void togglePin(project)}><Pin size={14}/>{project.pinned ? "Unpin" : "Pin"}</button>}
+                  </div>
                 );
               })}
             </div>
@@ -1234,7 +1479,7 @@ function MediaPage({
   projects: Project[];
   devlogs: Devlog[];
   isAdmin: boolean;
-  onUpload: (file: File, projectId?: number, devlogId?: number, status?: "draft" | "published") => void;
+  onUpload: (file: File, projectId?: number, devlogId?: number, status?: "draft" | "published") => Promise<MediaRecord>;
   onUpdate: (id: number, changes: Partial<Pick<MediaRecord, "name" | "projectId" | "devlogId" | "status" | "altText" | "caption" | "order">>) => void;
   onDelete: (item: MediaRecord) => void;
 }) {
@@ -1245,6 +1490,25 @@ function MediaPage({
   const [uploadProjectId, setUploadProjectId] = useState<number | undefined>();
   const [uploadDevlogId, setUploadDevlogId] = useState<number | undefined>();
   const [uploadStatus, setUploadStatus] = useState<"draft" | "published">("draft");
+  const [uploadCandidate, setUploadCandidate] = useState<File | null>(null);
+  const [uploading, setUploading] = useState(false);
+  const [uploadError, setUploadError] = useState("");
+
+  function selectUpload(file?: File) {
+    setUploadError("");
+    if (!file) return;
+    if (!file.type.startsWith("image/") && !file.type.startsWith("video/")) { setUploadCandidate(null); setUploadError("Choose an image or video file."); return; }
+    if (file.size > 50 * 1024 * 1024) { setUploadCandidate(null); setUploadError("Files must be 50 MB or smaller."); return; }
+    setUploadCandidate(file);
+  }
+
+  async function submitUpload() {
+    if (!uploadCandidate) return;
+    setUploading(true); setUploadError("");
+    try { await onUpload(uploadCandidate, uploadProjectId, uploadDevlogId, uploadStatus); setUploadCandidate(null); }
+    catch (error) { setUploadError(error instanceof Error ? error.message : "Upload failed. The media record was not saved."); }
+    finally { setUploading(false); }
+  }
 
   const mediaItems = useMemo(
     () =>
@@ -1286,8 +1550,11 @@ function MediaPage({
             <strong>{mediaItems.length}</strong>
           <span>{isAdmin ? "media records" : "published items"}</span>
         </div>
-        {isAdmin && <label className="gold-button media-upload-button"><Plus size={15}/> Upload media<input type="file" accept="image/*,video/*" onChange={(event) => { const file = event.target.files?.[0]; if (file) onUpload(file, uploadProjectId, uploadDevlogId, uploadStatus); event.currentTarget.value = ""; }} /></label>}
+        {isAdmin && <label className="gold-button media-upload-button"><Plus size={15}/> Choose media<input type="file" accept="image/*,video/*" onChange={(event) => { selectUpload(event.target.files?.[0]); event.currentTarget.value = ""; }} /></label>}
       </div>
+
+      {isAdmin && uploadError && <p className="media-upload-error" role="alert">{uploadError}</p>}
+      {isAdmin && uploadCandidate && <div className="media-upload-review"><LocalFilePreview file={uploadCandidate} className="media-upload-preview" alt="Upload preview"/><div><strong>{uploadCandidate.name}</strong><span>{(uploadCandidate.size / (1024 * 1024)).toFixed(1)} MB · {uploadCandidate.type}</span><div><button type="button" className="dark-button" disabled={uploading} onClick={() => setUploadCandidate(null)}>Cancel</button><button type="button" className="gold-button" disabled={uploading} onClick={() => void submitUpload()}>{uploading ? "Uploading…" : "Upload file"}</button></div></div></div>}
 
       {isAdmin && <div className="media-admin-options"><label>Link to project<select value={uploadProjectId ?? ""} onChange={(event) => setUploadProjectId(event.target.value ? Number(event.target.value) : undefined)}><option value="">No project</option>{projects.map((project) => <option key={project.id} value={project.id}>{project.name}</option>)}</select></label><label>Link to devlog<select value={uploadDevlogId ?? ""} onChange={(event) => setUploadDevlogId(event.target.value ? Number(event.target.value) : undefined)}><option value="">No devlog</option>{devlogs.map((log) => <option key={log.id} value={log.id}>{log.title}</option>)}</select></label><label>Visibility<select value={uploadStatus} onChange={(event) => setUploadStatus(event.target.value as "draft" | "published")}><option value="draft">Draft</option><option value="published">Published</option></select></label></div>}
 

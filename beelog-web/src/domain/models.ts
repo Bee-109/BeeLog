@@ -107,6 +107,7 @@ export type Project = {
   coverMediaId?: number | null;
   createdAt: number;
   status: PublicationStatus;
+  pinned?: boolean;
   tagIds: number[];
   slug?: string;
   summary?: string;
